@@ -10,7 +10,7 @@ mod template_receiver;
 use job_declarator::JobDeclarator;
 use key_utils::Secp256k1PublicKey;
 use mining_downstream::DownstreamMiningNode;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use task_manager::TaskManager;
 use template_receiver::TemplateRx;
 use tracing::{error, info};
@@ -38,7 +38,10 @@ use tracing::{error, info};
 ///    between all the contexts is not necessary.
 pub static IS_NEW_TEMPLATE_HANDLED: AtomicBool = AtomicBool::new(true);
 
+pub static NOW: AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub static IS_CUSTOM_JOB_SET: AtomicBool = AtomicBool::new(true);
+pub static IS_NEW_PHASH_ARRIVED: AtomicBool = AtomicBool::new(false);
 
 use crate::proxy_state::{DownstreamType, ProxyState, TpState};
 use roles_logic_sv2::{parsers::Mining, utils::Mutex};
@@ -59,6 +62,7 @@ pub async fn start(
     // This will not work when we implement support for multiple upstream
     IS_CUSTOM_JOB_SET.store(true, std::sync::atomic::Ordering::Release);
     IS_NEW_TEMPLATE_HANDLED.store(true, std::sync::atomic::Ordering::Release);
+    IS_NEW_PHASH_ARRIVED.store(false, std::sync::atomic::Ordering::Release);
     initialize_jd(receiver, sender, up_receiver, up_sender).await
 }
 

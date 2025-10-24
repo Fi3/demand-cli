@@ -268,50 +268,173 @@ impl TemplateRx {
                                             // Send the new template along with the token to the JD so that JD can
                                             // declare the mining job
                                             Some(TemplateDistribution::NewTemplate(m)) => {
-                                                // See coment on the definition of the global for memory
-                                                // ordering
-                                                super::IS_NEW_TEMPLATE_HANDLED.store(
-                                                    false,
-                                                    std::sync::atomic::Ordering::Release,
-                                                );
-                                                Self::send_tx_data_request(&self_mutex, m.clone())
-                                                    .await;
-                                                if self_mutex
-                                                    .safe_lock(|t| {
-                                                        t.new_template_message = Some(m.clone())
-                                                    })
-                                                    .is_err()
+                                                let new_phash = super::IS_NEW_PHASH_ARRIVED.load(std::sync::atomic::Ordering::Acquire);
+                                                let last_is_future = match self_mutex
+                                                    .safe_lock(|t| t.new_template_message.clone())
                                                 {
-                                                    error!("TemplateRx Mutex is corrupt");
-                                                    // Update global tp state to down
-                                                    ProxyState::update_tp_state(TpState::Down);
-                                                    break;
+                                                    Ok(Some(new_template_message)) => {
+                                                        new_template_message.future_template
+                                                    }
+                                                    Ok(None) => {
+                                                        false
+                                                    }
+                                                    Err(e) => {
+                                                        // Update global tp state to down
+                                                        error!("TemplateRx mutex poisoned: {e}");
+                                                        ProxyState::update_tp_state(TpState::Down);
+                                                        break;
+                                                    }
                                                 };
+                                                // THIS CODE ASSUME THAT TP SEND FUTURE ONLY BEFORE
+                                                // SNPH
+                                                // last_is_future	this_future	new_phash wait  next   discard
+                                                // true	            true	    true	  true	false  
+                                                // true	            true	    false	  true	false
+                                                // true	            false	    true	  true	true
+                                                // true	            false	    false	  true	false
+                                                // false	        true	    true	  false	false  true
+                                                // false	        true	    false	  true	false
+                                                // false	        false	    true	  false	true
+                                                // false	        false	    false	  true	false
+                                                //
 
-                                                let token = match last_token.clone() {
-                                                    Some(Some(token)) => token,
-                                                    Some(None) => break,
-                                                    None => break,
-                                                };
-                                                let pool_output = token.coinbase_output.to_vec();
-                                                if let Err(e) = Downstream::on_new_template(
-                                                    &down,
-                                                    m.clone(),
-                                                    &pool_output[..],
-                                                )
-                                                .await
-                                                {
-                                                    error!("{e:?}");
-                                                    // Update global downstream state to down
-                                                    ProxyState::update_downstream_state(
-                                                        DownstreamType::JdClientMiningDownstream,
+                                                let wait_for_last_template_to_be_completed = last_is_future && new_phash || !new_phash;
+                                                let go_to_next_template = !m.future_template && new_phash;
+
+                                                let discard_last_and_use_this = !last_is_future && !wait_for_last_template_to_be_completed;
+
+                                                if wait_for_last_template_to_be_completed {
+                                                    if new_phash {
+                                                        super::IS_NEW_PHASH_ARRIVED.store(false,std::sync::atomic::Ordering::Release);
+                                                    }
+                                                    // See coment on the definition of the global for memory
+                                                    // ordering
+                                                    super::IS_NEW_TEMPLATE_HANDLED.store(
+                                                        false,
+                                                        std::sync::atomic::Ordering::Release,
                                                     );
-                                                };
+                                                    let now = std::time::SystemTime::now()
+                                                        .duration_since(std::time::UNIX_EPOCH)
+                                                        .expect("Time went backwards").as_micros() as u64;
+                                                    super::NOW.store(
+                                                        now,
+                                                        std::sync::atomic::Ordering::Release,
+                                                    );
+                                                    Self::send_tx_data_request(&self_mutex, m.clone())
+                                                        .await;
+                                                    if self_mutex
+                                                        .safe_lock(|t| {
+                                                            t.new_template_message = Some(m.clone())
+                                                        })
+                                                        .is_err()
+                                                    {
+                                                        error!("TemplateRx Mutex is corrupt");
+                                                        // Update global tp state to down
+                                                        ProxyState::update_tp_state(TpState::Down);
+                                                        break;
+                                                    };
+
+                                                    let token = match last_token.clone() {
+                                                        Some(Some(token)) => token,
+                                                        Some(None) => break,
+                                                        None => break,
+                                                    };
+                                                    let pool_output = token.coinbase_output.to_vec();
+                                                    if let Err(e) = Downstream::on_new_template(
+                                                        &down,
+                                                        m.clone(),
+                                                        &pool_output[..],
+                                                    )
+                                                    .await
+                                                    {
+                                                        error!("{e:?}");
+                                                        // Update global downstream state to down
+                                                        ProxyState::update_downstream_state(
+                                                            DownstreamType::JdClientMiningDownstream,
+                                                        );
+                                                    };
+                                                } else if go_to_next_template {
+                                                    //   last_is_future	this_future	new_phash wait  next   discard
+                                                    // 1)true           false	    true	  true	true
+                                                    // 2)false	        false	    true	  false	true
+                                                    // D)false	        true	    true	  false	false  true
+                                                    //
+                                                    // 1 ->  not possible cause we chak wait before
+                                                    //   so ok
+                                                    // 2 ->  we have to wait fot the next one that
+                                                    //   will be discard we don't need to change
+                                                    //   any global
+                                                    continue
+                                                } else if discard_last_and_use_this {
+                                                    if new_phash {
+                                                        super::IS_NEW_PHASH_ARRIVED.store(false,std::sync::atomic::Ordering::Release);
+                                                    }
+                                                    // Here we mark the IS_CUSTOM_JOB_SET as true since the last declared job
+                                                    // received is invalid if we are still in the process of declaring it we
+                                                    // want to free it since we are never going to do SetCustomJob for that
+                                                    // declared job. If we are not doing a declare + set job is already true so
+                                                    // nothing change.
+                                                    super::IS_CUSTOM_JOB_SET.store(true, std::sync::atomic::Ordering::Release);
+                                                    // See coment on the definition of the global for memory
+                                                    // ordering
+                                                    super::IS_NEW_TEMPLATE_HANDLED.store(
+                                                        false,
+                                                        std::sync::atomic::Ordering::Release,
+                                                    );
+                                                    let now = std::time::SystemTime::now()
+                                                        .duration_since(std::time::UNIX_EPOCH)
+                                                        .expect("Time went backwards").as_micros() as u64;
+                                                    super::NOW.store(
+                                                        now,
+                                                        std::sync::atomic::Ordering::Release,
+                                                    );
+                                                    Self::send_tx_data_request(&self_mutex, m.clone())
+                                                        .await;
+                                                    if self_mutex
+                                                        .safe_lock(|t| {
+                                                            t.new_template_message = Some(m.clone())
+                                                        })
+                                                        .is_err()
+                                                    {
+                                                        error!("TemplateRx Mutex is corrupt");
+                                                        // Update global tp state to down
+                                                        ProxyState::update_tp_state(TpState::Down);
+                                                        break;
+                                                    };
+
+                                                    let token = match last_token.clone() {
+                                                        Some(Some(token)) => token,
+                                                        Some(None) => break,
+                                                        None => break,
+                                                    };
+                                                    let pool_output = token.coinbase_output.to_vec();
+                                                    if let Err(e) = Downstream::on_new_template(
+                                                        &down,
+                                                        m.clone(),
+                                                        &pool_output[..],
+                                                    )
+                                                    .await
+                                                    {
+                                                        error!("{e:?}");
+                                                        // Update global downstream state to down
+                                                        ProxyState::update_downstream_state(
+                                                            DownstreamType::JdClientMiningDownstream,
+                                                        );
+                                                    };
+                                                    
+                                                } else {
+                                                    panic!();
+                                                }
                                             }
                                             Some(TemplateDistribution::SetNewPrevHash(m)) => {
+                                                super::IS_NEW_PHASH_ARRIVED.store(true, std::sync::atomic::Ordering::Release);
                                                 info!("Received SetNewPrevHash, waiting for IS_NEW_TEMPLATE_HANDLED");
                                                 // See coment on the definition of the global for memory
                                                 // ordering
+                                                //
+                                                // This add ~2millis of latency, for now I leave it
+                                                // here since it means 8*e^-7 % bigger rej rate it
+                                                // looks like something acceptable
                                                 while !super::IS_NEW_TEMPLATE_HANDLED
                                                     .load(std::sync::atomic::Ordering::Acquire)
                                                 {

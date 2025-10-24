@@ -616,6 +616,7 @@ impl ParseUpstreamMiningMessages<Downstream, NullDownstreamMiningSelector, NoRou
         if let Some(template_id) = self.template_to_job_id.take_template_id(m.request_id) {
             self.template_to_job_id
                 .register_job_id(template_id, m.job_id);
+            println!("SET TO TRUE job success");
             IS_CUSTOM_JOB_SET.store(true, std::sync::atomic::Ordering::Release);
             Ok(SendTo::None(None))
         } else {

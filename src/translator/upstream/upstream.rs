@@ -86,6 +86,8 @@ pub struct Upstream {
     // than the configured percentage
     pub(super) difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
     pub sender: TSender<Mining<'static>>,
+    sent_up: u32,
+    rejected: u32,
 }
 
 impl PartialEq for Upstream {
@@ -123,6 +125,8 @@ impl Upstream {
             target,
             difficulty_config,
             sender,
+            sent_up: 0,
+            rejected: 0,
         })))
     }
 
@@ -393,6 +397,12 @@ impl Upstream {
                         error!("Unable to send SubmitSharesExtended msg upstream");
                         return;
                     };
+                    self_
+                        .safe_lock(|s| {
+                            s.sent_up = s.sent_up + 1;
+                            println!("accepted: {}/{}", s.sent_up, s.rejected);
+                        })
+                        .unwrap();
                 }
             })
         };
@@ -589,6 +599,8 @@ impl ParseUpstreamMiningMessages<Downstream, NullDownstreamMiningSelector, NoRou
         &mut self,
         _m: roles_logic_sv2::mining_sv2::SubmitSharesError,
     ) -> Result<roles_logic_sv2::handlers::mining::SendTo<Downstream>, RolesLogicError> {
+        self.rejected = self.rejected + 1;
+        error!("Ops rejected share");
         Ok(SendTo::None(None))
     }
 

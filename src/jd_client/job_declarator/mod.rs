@@ -15,7 +15,7 @@ use roles_logic_sv2::{
 use std::{collections::HashMap, convert::TryInto};
 use task_manager::TaskManager;
 use tokio::sync::mpsc::{Receiver as TReceiver, Sender as TSender};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use async_recursion::async_recursion;
 use nohash_hasher::BuildNoHashHasher;
@@ -367,6 +367,16 @@ impl JobDeclarator {
                                 break;
                             };
                         } else {
+                            // // If IS_CUSTOM_JOB_SET is false and we received a declare mining job
+                            // // success it means that either the pool is bugged (we assume that it
+                            // // isn't) or that the prev hash has changed. Since the phash changed we do
+                            // // not want to continue with the custom job for this specfic declared job
+                            // // but immidiatly start with the next job to declare.
+                            // // TODO TODO TODO use the NEW_PHASH global
+                            // if super::IS_CUSTOM_JOB_SET.load(std::sync::atomic::Ordering::Acquire) {
+                            //     warn!("ingore this declare job success and use the next since prev hash changed");
+                            //     continue;
+                            // }
                             let set_new_prev_hash =
                                 match self_mutex.safe_lock(|s| s.last_set_new_prev_hash.clone()) {
                                     Ok(set_new_prev_hash) => set_new_prev_hash,
@@ -437,7 +447,7 @@ impl JobDeclarator {
     pub async fn on_set_new_prev_hash(
         self_mutex: Arc<Mutex<Self>>,
         set_new_prev_hash: SetNewPrevHash<'static>,
-    ) -> Result<(), Error> {
+    ) -> Result<(),Error> {
         let task_manager = self_mutex
             .safe_lock(|s| s.task_manager.clone())
             .map_err(|_| Error::JobDeclaratorMutexCorrupted)?;
@@ -473,7 +483,7 @@ impl JobDeclarator {
                 }) {
                     Ok(Some(Some(future_job_tuple))) => break future_job_tuple,
                     Ok(Some(None)) => {
-                        // No future jobs
+                        // TODO TODO TODO we should really use future jobs (and add them to TP)
                         error!(
                             "{}",
                             Error::RolesSv2Logic(roles_logic_sv2::errors::Error::NoFutureJobs,)

@@ -23,7 +23,7 @@ use tokio::{
     sync::mpsc::{Receiver as TReceiver, Sender as TSender},
     task,
 };
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
 
@@ -337,6 +337,8 @@ impl DownstreamMiningNode {
         mut new_template: NewTemplate<'static>,
         pool_output: &[u8],
     ) -> Result<(), JdClientError> {
+        // Make sure to set the template handled to true since we do not have a channel opened yet
+        // and template can not be handled without it we will lock template handling forever.
         if !self_mutex
             .safe_lock(|s| s.status.have_channel())
             .map_err(|e| Error::PoisonLock(e.to_string()))?
@@ -397,6 +399,15 @@ impl DownstreamMiningNode {
         // See coment on the definition of the global for memory
         // ordering
         super::IS_NEW_TEMPLATE_HANDLED.store(true, std::sync::atomic::Ordering::Release);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("Time went backwards").as_micros() as u64;
+        let previous = super::NOW.load(std::sync::atomic::Ordering::Relaxed);
+
+        info!(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA on_new_template took {} millis",
+            (now - previous) as f64 / 100.0,
+        );
         Ok(())
     }
 
@@ -651,9 +662,7 @@ impl
                     Share::Standard(_) => unreachable!(),
                 }
             }
-            // When we have a ShareMeetBitcoinTarget it means that the proxy know the bitcoin
-            // target that means that the proxy must have JD capabilities that means that the
-            // second tuple elements can not be None but must be Some(template_id)
+            // ShareMeetBitcoinTarget without template id is impossibvle
             OnNewShare::ShareMeetBitcoinTarget(_) => unreachable!(),
             OnNewShare::SendSubmitShareUpstream(_) => unreachable!(),
             OnNewShare::ShareMeetDownstreamTarget => Ok(SendTo::None(None)),
