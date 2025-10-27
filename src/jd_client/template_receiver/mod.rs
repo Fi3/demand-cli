@@ -268,16 +268,15 @@ impl TemplateRx {
                                             // Send the new template along with the token to the JD so that JD can
                                             // declare the mining job
                                             Some(TemplateDistribution::NewTemplate(m)) => {
-                                                let new_phash = super::IS_NEW_PHASH_ARRIVED.load(std::sync::atomic::Ordering::Acquire);
+                                                let new_phash = super::IS_NEW_PHASH_ARRIVED
+                                                    .load(std::sync::atomic::Ordering::Acquire);
                                                 let last_is_future = match self_mutex
                                                     .safe_lock(|t| t.new_template_message.clone())
                                                 {
                                                     Ok(Some(new_template_message)) => {
                                                         new_template_message.future_template
                                                     }
-                                                    Ok(None) => {
-                                                        false
-                                                    }
+                                                    Ok(None) => false,
                                                     Err(e) => {
                                                         // Update global tp state to down
                                                         error!("TemplateRx mutex poisoned: {e}");
@@ -288,7 +287,7 @@ impl TemplateRx {
                                                 // THIS CODE ASSUME THAT TP SEND FUTURE ONLY BEFORE
                                                 // SNPH
                                                 // last_is_future	this_future	new_phash wait  next   discard
-                                                // true	            true	    true	  true	false  
+                                                // true	            true	    true	  true	false
                                                 // true	            true	    false	  true	false
                                                 // true	            false	    true	  true	true
                                                 // true	            false	    false	  true	false
@@ -298,14 +297,23 @@ impl TemplateRx {
                                                 // false	        false	    false	  true	false
                                                 //
 
-                                                let wait_for_last_template_to_be_completed = last_is_future && new_phash || !new_phash;
-                                                let go_to_next_template = !m.future_template && new_phash;
+                                                let wait_for_last_template_to_be_completed =
+                                                    last_is_future && new_phash || !new_phash;
+                                                let go_to_next_template =
+                                                    !m.future_template && new_phash;
 
-                                                let discard_last_and_use_this = !last_is_future && !wait_for_last_template_to_be_completed;
+                                                let discard_last_and_use_this = !last_is_future
+                                                    && !wait_for_last_template_to_be_completed;
 
                                                 if wait_for_last_template_to_be_completed {
+                                                    println!(
+                                                        "wait_for_last_template_to_be_completed"
+                                                    );
                                                     if new_phash {
-                                                        super::IS_NEW_PHASH_ARRIVED.store(false,std::sync::atomic::Ordering::Release);
+                                                        super::IS_NEW_PHASH_ARRIVED.store(
+                                                            false,
+                                                            std::sync::atomic::Ordering::Release,
+                                                        );
                                                     }
                                                     // See coment on the definition of the global for memory
                                                     // ordering
@@ -315,13 +323,18 @@ impl TemplateRx {
                                                     );
                                                     let now = std::time::SystemTime::now()
                                                         .duration_since(std::time::UNIX_EPOCH)
-                                                        .expect("Time went backwards").as_micros() as u64;
+                                                        .expect("Time went backwards")
+                                                        .as_micros()
+                                                        as u64;
                                                     super::NOW.store(
                                                         now,
                                                         std::sync::atomic::Ordering::Release,
                                                     );
-                                                    Self::send_tx_data_request(&self_mutex, m.clone())
-                                                        .await;
+                                                    Self::send_tx_data_request(
+                                                        &self_mutex,
+                                                        m.clone(),
+                                                    )
+                                                    .await;
                                                     if self_mutex
                                                         .safe_lock(|t| {
                                                             t.new_template_message = Some(m.clone())
@@ -339,7 +352,8 @@ impl TemplateRx {
                                                         Some(None) => break,
                                                         None => break,
                                                     };
-                                                    let pool_output = token.coinbase_output.to_vec();
+                                                    let pool_output =
+                                                        token.coinbase_output.to_vec();
                                                     if let Err(e) = Downstream::on_new_template(
                                                         &down,
                                                         m.clone(),
@@ -354,6 +368,7 @@ impl TemplateRx {
                                                         );
                                                     };
                                                 } else if go_to_next_template {
+                                                    println!("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII");
                                                     //   last_is_future	this_future	new_phash wait  next   discard
                                                     // 1)true           false	    true	  true	true
                                                     // 2)false	        false	    true	  false	true
@@ -364,17 +379,24 @@ impl TemplateRx {
                                                     // 2 ->  we have to wait fot the next one that
                                                     //   will be discard we don't need to change
                                                     //   any global
-                                                    continue
+                                                    continue;
                                                 } else if discard_last_and_use_this {
+                                                    println!("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
                                                     if new_phash {
-                                                        super::IS_NEW_PHASH_ARRIVED.store(false,std::sync::atomic::Ordering::Release);
+                                                        super::IS_NEW_PHASH_ARRIVED.store(
+                                                            false,
+                                                            std::sync::atomic::Ordering::Release,
+                                                        );
                                                     }
                                                     // Here we mark the IS_CUSTOM_JOB_SET as true since the last declared job
                                                     // received is invalid if we are still in the process of declaring it we
                                                     // want to free it since we are never going to do SetCustomJob for that
                                                     // declared job. If we are not doing a declare + set job is already true so
                                                     // nothing change.
-                                                    super::IS_CUSTOM_JOB_SET.store(true, std::sync::atomic::Ordering::Release);
+                                                    super::IS_CUSTOM_JOB_SET.store(
+                                                        true,
+                                                        std::sync::atomic::Ordering::Release,
+                                                    );
                                                     // See coment on the definition of the global for memory
                                                     // ordering
                                                     super::IS_NEW_TEMPLATE_HANDLED.store(
@@ -383,13 +405,18 @@ impl TemplateRx {
                                                     );
                                                     let now = std::time::SystemTime::now()
                                                         .duration_since(std::time::UNIX_EPOCH)
-                                                        .expect("Time went backwards").as_micros() as u64;
+                                                        .expect("Time went backwards")
+                                                        .as_micros()
+                                                        as u64;
                                                     super::NOW.store(
                                                         now,
                                                         std::sync::atomic::Ordering::Release,
                                                     );
-                                                    Self::send_tx_data_request(&self_mutex, m.clone())
-                                                        .await;
+                                                    Self::send_tx_data_request(
+                                                        &self_mutex,
+                                                        m.clone(),
+                                                    )
+                                                    .await;
                                                     if self_mutex
                                                         .safe_lock(|t| {
                                                             t.new_template_message = Some(m.clone())
@@ -407,7 +434,8 @@ impl TemplateRx {
                                                         Some(None) => break,
                                                         None => break,
                                                     };
-                                                    let pool_output = token.coinbase_output.to_vec();
+                                                    let pool_output =
+                                                        token.coinbase_output.to_vec();
                                                     if let Err(e) = Downstream::on_new_template(
                                                         &down,
                                                         m.clone(),
@@ -421,13 +449,15 @@ impl TemplateRx {
                                                             DownstreamType::JdClientMiningDownstream,
                                                         );
                                                     };
-                                                    
                                                 } else {
                                                     panic!();
                                                 }
                                             }
                                             Some(TemplateDistribution::SetNewPrevHash(m)) => {
-                                                super::IS_NEW_PHASH_ARRIVED.store(true, std::sync::atomic::Ordering::Release);
+                                                super::IS_NEW_PHASH_ARRIVED.store(
+                                                    true,
+                                                    std::sync::atomic::Ordering::Release,
+                                                );
                                                 info!("Received SetNewPrevHash, waiting for IS_NEW_TEMPLATE_HANDLED");
                                                 // See coment on the definition of the global for memory
                                                 // ordering
@@ -465,34 +495,45 @@ impl TemplateRx {
                                                     m,
                                                 ),
                                             ) => {
-                                                // safe to unwrap because this message is received after the new
-                                                // template message
-                                                let transactions_data = m.transaction_list;
-                                                let excess_data = m.excess_data;
-                                                let expected_template_id = m.template_id;
-                                                let m = match self_mutex
-                                                    .safe_lock(|t| t.new_template_message.clone())
-                                                {
-                                                    Ok(new_template_message) => {
-                                                        new_template_message.unwrap()
-                                                    }
-                                                    Err(e) => {
-                                                        // Update global tp state to down
-                                                        error!("TemplateRx mutex poisoned: {e}");
-                                                        ProxyState::update_tp_state(TpState::Down);
-                                                        break;
-                                                    }
-                                                };
-                                                if m.template_id != expected_template_id {
-                                                    continue;
-                                                }
-                                                let token = last_token.unwrap().unwrap();
-                                                last_token = None;
-                                                let mining_token = token.mining_job_token.to_vec();
-                                                let pool_coinbase_out =
-                                                    token.coinbase_output.to_vec();
-                                                if let Some(jd) = jd.as_ref() {
-                                                    if let Err(e) = super::job_declarator::JobDeclarator::on_new_template(
+                                                let (erase_last_token_tx, erase_last_token_rx) =
+                                                    tokio::sync::oneshot::channel();
+                                                let self_mutex = self_mutex.clone();
+                                                let token = last_token.clone().unwrap().unwrap();
+                                                let jd = jd.clone(); 
+                                                tokio::task::spawn(async move {
+                                                    // safe to unwrap because this message is received after the new
+                                                    // template message
+                                                    let transactions_data = m.transaction_list;
+                                                    let excess_data = m.excess_data;
+                                                    let expected_template_id = m.template_id;
+                                                    let m = match self_mutex.safe_lock(|t| {
+                                                        t.new_template_message.clone()
+                                                    }) {
+                                                        Ok(new_template_message) => {
+                                                            new_template_message.unwrap()
+                                                        }
+                                                        Err(e) => {
+                                                            // Update global tp state to down
+                                                            error!(
+                                                                "TemplateRx mutex poisoned: {e}"
+                                                            );
+                                                            ProxyState::update_tp_state(
+                                                                TpState::Down,
+                                                            );
+                                                            panic!();
+                                                        }
+                                                    };
+                                                    if m.template_id != expected_template_id {
+                                                        return;
+                                                    };
+                                                    erase_last_token_tx.send(()).unwrap();
+                                                    //last_token = None;
+                                                    let mining_token =
+                                                        token.mining_job_token.to_vec();
+                                                    let pool_coinbase_out =
+                                                        token.coinbase_output.to_vec();
+                                                    if let Some(jd) = jd.as_ref() {
+                                                        if let Err(e) = super::job_declarator::JobDeclarator::on_new_template(
                                                 jd,
                                                 m.clone(),
                                                 mining_token,
@@ -502,10 +543,13 @@ impl TemplateRx {
                                             )
                                             .await {
                                                 error!("{e:?}");
-                                                break;
+                                                panic!();
 
                                             };
-                                                }
+                                                    }
+                                                });
+                                            erase_last_token_rx.await.unwrap();
+                                            last_token = None;
                                             }
                                             Some(
                                                 TemplateDistribution::RequestTransactionDataError(

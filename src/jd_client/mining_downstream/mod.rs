@@ -48,6 +48,8 @@ pub struct DownstreamMiningNode {
     // used to retreive the job id of the share that we send upstream
     last_template_id: u64,
     pub jd: Option<Arc<Mutex<JobDeclarator>>>,
+    sent: u32,
+    discarded: u32,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -139,6 +141,8 @@ impl DownstreamMiningNode {
             // Is upated in the message handler that si called earlier in the main loop.
             last_template_id: 0,
             jd,
+            sent: 0,
+            discarded: 0,
         }
     }
 
@@ -256,34 +260,53 @@ impl DownstreamMiningNode {
                 UpstreamMiningNode::send(&upstream_mutex, incoming).await?;
             }
             Ok(SendTo::RelayNewMessage(Mining::SubmitSharesExtended(mut share))) => {
-                // If we have a realy new message it means that we are in a pooled mining mods.
-                let upstream_mutex = self_mutex
-                    .safe_lock(|s| s.status.get_upstream())
-                    .map_err(|_| JdClientError::JdClientDownstreamMutexCorrupted)?
-                    .ok_or_else(|| {
-                        error!("Upstream is None Here");
-                        JdClientError::Unrecoverable
-                    })?;
-                // When re receive SetupConnectionSuccess we link the last_template_id with the
-                // pool's job_id. The below return as soon as we have a pairable job id for the
-                // template_id associated with this share.
-                let last_template_id = self_mutex
-                    .safe_lock(|s| s.last_template_id)
-                    .map_err(|_| JdClientError::JdClientDownstreamMutexCorrupted)?;
-                let job_id_future =
-                    UpstreamMiningNode::get_job_id(&upstream_mutex, last_template_id);
-                //?check
-                if let Ok(Ok(job_id)) = timeout(Duration::from_secs(20), job_id_future).await {
-                    share.job_id = job_id;
-                    debug!(
-                        "Sending valid block solution upstream, with job_id {}",
-                        job_id
-                    );
-                    let message = Mining::SubmitSharesExtended(share);
-                    UpstreamMiningNode::send(&upstream_mutex, message).await?;
-                } else {
-                    error!("Timeout getting job_id for last_template_id: {last_template_id}, discard share");
-                }
+                tokio::task::spawn(async move {
+                    // If we have a realy new message it means that we are in a pooled mining mods.
+                    let upstream_mutex = self_mutex
+                        .safe_lock(|s| s.status.get_upstream())
+                        .map_err(|_| JdClientError::JdClientDownstreamMutexCorrupted)
+                        .unwrap()
+                        .ok_or_else(|| {
+                            error!("Upstream is None Here");
+                            JdClientError::Unrecoverable
+                        })
+                        .unwrap();
+                    // When re receive SetupConnectionSuccess we link the last_template_id with the
+                    // pool's job_id. The below return as soon as we have a pairable job id for the
+                    // template_id associated with this share.
+                    let last_template_id = self_mutex
+                        .safe_lock(|s| s.last_template_id)
+                        .map_err(|_| JdClientError::JdClientDownstreamMutexCorrupted)
+                        .unwrap();
+                    let job_id_future =
+                        UpstreamMiningNode::get_job_id(&upstream_mutex, last_template_id);
+                    //?check
+                    if let Ok(Ok(job_id)) = timeout(Duration::from_secs(60), job_id_future).await {
+                        share.job_id = job_id;
+                        debug!(
+                            "Sending valid block solution upstream, with job_id {}",
+                            job_id
+                        );
+                        let message = Mining::SubmitSharesExtended(share);
+                        self_mutex
+                            .safe_lock(|s| {
+                                s.sent += 1;
+                                println!("JDJD Sent: {}/{}", s.sent, s.discarded);
+                            })
+                            .unwrap();
+                        UpstreamMiningNode::send(&upstream_mutex, message)
+                            .await
+                            .unwrap();
+                    } else {
+                        self_mutex
+                            .safe_lock(|s| {
+                                s.discarded += 1;
+                                println!("JDJD Sent: {}/{}", s.sent, s.discarded);
+                            })
+                            .unwrap();
+                        error!("Timeout getting job_id for last_template_id: {last_template_id}, discard share");
+                    }
+                });
             }
             Ok(SendTo::RelayNewMessage(message)) => {
                 let upstream_mutex = self_mutex
@@ -401,7 +424,8 @@ impl DownstreamMiningNode {
         super::IS_NEW_TEMPLATE_HANDLED.store(true, std::sync::atomic::Ordering::Release);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("Time went backwards").as_micros() as u64;
+            .expect("Time went backwards")
+            .as_micros() as u64;
         let previous = super::NOW.load(std::sync::atomic::Ordering::Relaxed);
 
         info!(

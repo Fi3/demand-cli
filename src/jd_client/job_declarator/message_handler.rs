@@ -32,6 +32,8 @@ impl ParseServerJobDeclarationMessages for JobDeclarator {
         &mut self,
         _message: DeclareMiningJobError,
     ) -> Result<SendTo, Error> {
+        // TODO consider using declarative names instead of setting states
+        super::super::IS_CUSTOM_JOB_SET.store(true, std::sync::atomic::Ordering::Release);
         Ok(SendTo::None(None))
     }
 
@@ -39,6 +41,8 @@ impl ParseServerJobDeclarationMessages for JobDeclarator {
         &mut self,
         message: ProvideMissingTransactions,
     ) -> Result<SendTo, Error> {
+        let now = std::time::Instant::now();
+        println!("provide missing transactions: OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO");
         let tx_list = self
             .last_declare_mining_jobs_sent
             .get(&message.request_id)
@@ -60,6 +64,8 @@ impl ParseServerJobDeclarationMessages for JobDeclarator {
             request_id,
             transaction_list,
         };
+        println!("provide missing transactions: PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP");
+        println!("Elapsed time: {:?}", now.elapsed());
         let message_enum =
             JobDeclaration::ProvideMissingTransactionsSuccess(message_provide_missing_transactions);
         Ok(SendTo::Respond(message_enum))

@@ -225,14 +225,16 @@ impl JobDeclarator {
         coinbase_pool_output: Vec<u8>,
     ) -> Result<(), Error> {
         let now = std::time::Instant::now();
+        println!("TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT");
         while !super::IS_CUSTOM_JOB_SET.load(std::sync::atomic::Ordering::Acquire) {
-            if now.elapsed().as_secs() > 30 {
+            if now.elapsed().as_secs() > 120 {
                 error!("Failed to set custom job");
                 ProxyState::update_jd_state(JdState::Down);
                 return Err(Error::Unrecoverable);
             }
             tokio::task::yield_now().await;
         }
+        println!("YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY");
         super::IS_CUSTOM_JOB_SET.store(false, std::sync::atomic::Ordering::Release);
         let (id, _, sender) = self_mutex
             .safe_lock(|s| (s.req_ids.next(), s.min_extranonce_size, s.sender.clone()))
@@ -280,7 +282,11 @@ impl JobDeclarator {
             coinbase_pool_output,
             tx_list: tx_list_.clone(),
         };
-        Self::update_last_declare_job_sent(self_mutex, id, last_declare)?;
+        dbg!(Self::update_last_declare_job_sent(
+            self_mutex,
+            id,
+            last_declare
+        ))?;
         let frame: StdFrame =
             PoolMessages::JobDeclaration(JobDeclaration::DeclareMiningJob(declare_job))
                 .try_into()
@@ -447,7 +453,7 @@ impl JobDeclarator {
     pub async fn on_set_new_prev_hash(
         self_mutex: Arc<Mutex<Self>>,
         set_new_prev_hash: SetNewPrevHash<'static>,
-    ) -> Result<(),Error> {
+    ) -> Result<(), Error> {
         let task_manager = self_mutex
             .safe_lock(|s| s.task_manager.clone())
             .map_err(|_| Error::JobDeclaratorMutexCorrupted)?;
