@@ -281,7 +281,7 @@ impl DownstreamMiningNode {
                     let job_id_future =
                         UpstreamMiningNode::get_job_id(&upstream_mutex, last_template_id);
                     //?check
-                    if let Ok(Ok(job_id)) = timeout(Duration::from_secs(60), job_id_future).await {
+                    if let Ok(Ok(job_id)) = timeout(Duration::from_secs(20), job_id_future).await {
                         share.job_id = job_id;
                         debug!(
                             "Sending valid block solution upstream, with job_id {}",

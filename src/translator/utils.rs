@@ -78,23 +78,24 @@ pub async fn check_share_rate_limit(downstream: Arc<Mutex<Downstream>>) {
 
 /// Checks if a share can be sent by checking if rate is limited
 pub fn allow_submit_share() -> crate::translator::error::ProxyResult<'static, bool> {
-    // Check if rate-limited
-    let is_rate_limited = IS_RATE_LIMITED.load(std::sync::atomic::Ordering::SeqCst);
+    Ok(true)
+    //// Check if rate-limited
+    //let is_rate_limited = IS_RATE_LIMITED.load(std::sync::atomic::Ordering::SeqCst);
 
-    if is_rate_limited {
-        return Ok(false); // Rate limit exceeded, don’t send
-    }
+    //if is_rate_limited {
+    //    return Ok(false); // Rate limit exceeded, don’t send
+    //}
 
-    SHARE_TIMESTAMPS
-        .safe_lock(|timestamps| {
-            timestamps.push_back(tokio::time::Instant::now());
-        })
-        .map_err(|e| {
-            error!("Failed to lock SHARE_TIMESTAMPS: {:?}", e);
-            Error::TranslatorDiffConfigMutexPoisoned
-        })?;
+    //SHARE_TIMESTAMPS
+    //    .safe_lock(|timestamps| {
+    //        timestamps.push_back(tokio::time::Instant::now());
+    //    })
+    //    .map_err(|e| {
+    //        error!("Failed to lock SHARE_TIMESTAMPS: {:?}", e);
+    //        Error::TranslatorDiffConfigMutexPoisoned
+    //    })?;
 
-    Ok(true) // Share can be sent
+    //Ok(true) // Share can be sent
 }
 
 pub fn validate_share(

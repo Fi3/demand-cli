@@ -57,7 +57,7 @@ impl CircularBuffer {
 
 impl std::default::Default for CircularBuffer {
     fn default() -> Self {
-        Self::new(10)
+        Self::new(1000)
     }
 }
 
@@ -109,10 +109,19 @@ pub struct Upstream {
     channel_factory: Option<PoolChannelFactory>,
     template_to_job_id: TemplateToJobId,
     req_ids: Id,
+    sent: u64,
+    rejected: u64,
+    accepted: u64,
 }
 
 impl Upstream {
     pub async fn send(self_: &Arc<Mutex<Self>>, message: Mining<'static>) -> ProxyResult<()> {
+        match message {
+            Mining::SubmitSharesExtended(_) => self_.safe_lock(|s| {
+                s.sent += 1;
+            }).unwrap(),
+            _ => (),
+        };
         let sender = self_
             .safe_lock(|s| s.sender.clone())
             .map_err(|_| Error::JdClientUpstreamMutexCorrupted)?;
@@ -142,6 +151,9 @@ impl Upstream {
             channel_factory: None,
             template_to_job_id: TemplateToJobId::new(),
             req_ids: Id::new(),
+            sent: 0,
+            rejected: 0,
+            accepted: 0,
         })))
     }
 
@@ -203,6 +215,13 @@ impl Upstream {
                     .register_template_id(template_id, request_id)
             })
             .map_err(|_| Error::JdClientUpstreamMutexCorrupted)?;
+        let start = crate::DECLARE_JOB_TIME.load(std::sync::atomic::Ordering::Acquire).try_into().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let elapsed_ms = now.saturating_sub(start);
+        tracing::info!("Sent SetCustomJob, elapsed_ms: {}", elapsed_ms);
         Self::send(self_, message).await
     }
 
@@ -516,6 +535,11 @@ impl ParseUpstreamMiningMessages<Downstream, NullDownstreamMiningSelector, NoRou
         &mut self,
         _m: roles_logic_sv2::mining_sv2::SubmitSharesSuccess,
     ) -> Result<roles_logic_sv2::handlers::mining::SendTo<Downstream>, RolesLogicError> {
+        self.accepted += 1;
+        println!(
+            "UPSTREAM Rejected: {}, Accepted: {}, Sent: {}",
+            self.rejected, self.accepted, self.sent
+        );
         if let Some(downstream) = &self.downstream {
             Ok(SendTo::RelaySameMessageToRemote(downstream.clone()))
         } else {
@@ -528,6 +552,11 @@ impl ParseUpstreamMiningMessages<Downstream, NullDownstreamMiningSelector, NoRou
         &mut self,
         _m: roles_logic_sv2::mining_sv2::SubmitSharesError,
     ) -> Result<roles_logic_sv2::handlers::mining::SendTo<Downstream>, RolesLogicError> {
+        self.rejected += 1;
+        println!(
+            "UPSTREAM Rejected: {}, Accepted: {}, Sent: {}",
+            self.rejected, self.accepted, self.sent
+        );
         // TODO remove the comments when share too low err get fixed
         //self.pool_chaneger_trigger
         //    .safe_lock(|t| t.start(self.tx_status.clone()))
@@ -612,12 +641,20 @@ impl ParseUpstreamMiningMessages<Downstream, NullDownstreamMiningSelector, NoRou
         &mut self,
         m: roles_logic_sv2::mining_sv2::SetCustomMiningJobSuccess,
     ) -> Result<roles_logic_sv2::handlers::mining::SendTo<Downstream>, RolesLogicError> {
+        let start = crate::DECLARE_JOB_TIME.load(std::sync::atomic::Ordering::Acquire).try_into().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let elapsed_ms = now.saturating_sub(start);
+        tracing::info!("Received SetCustomJobSuccess, elapsed_ms: {}", elapsed_ms);
         // TODO
         info!("Set custom mining job success {}", m.job_id);
         if let Some(template_id) = self.template_to_job_id.take_template_id(m.request_id) {
             self.template_to_job_id
                 .register_job_id(template_id, m.job_id);
             println!("SET TO TRUE job success");
+            info!("Set custom mining job success {}, for template {}", m.job_id, template_id);
             IS_CUSTOM_JOB_SET.store(true, std::sync::atomic::Ordering::Release);
             Ok(SendTo::None(None))
         } else {

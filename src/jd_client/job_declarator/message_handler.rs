@@ -41,8 +41,13 @@ impl ParseServerJobDeclarationMessages for JobDeclarator {
         &mut self,
         message: ProvideMissingTransactions,
     ) -> Result<SendTo, Error> {
-        let now = std::time::Instant::now();
-        println!("provide missing transactions: OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO");
+        let start = crate::DECLARE_JOB_TIME.load(std::sync::atomic::Ordering::Acquire).try_into().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let elapsed_ms = now.saturating_sub(start);
+        tracing::info!("Received ProvideMissingTransactions, elapsed_ms: {}", elapsed_ms);
         let tx_list = self
             .last_declare_mining_jobs_sent
             .get(&message.request_id)
@@ -64,8 +69,12 @@ impl ParseServerJobDeclarationMessages for JobDeclarator {
             request_id,
             transaction_list,
         };
-        println!("provide missing transactions: PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP");
-        println!("Elapsed time: {:?}", now.elapsed());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let elapsed_ms = now.saturating_sub(start);
+        tracing::info!("Send ProvideMissingTransactionsSuccess, elapsed_ms: {}", elapsed_ms);
         let message_enum =
             JobDeclaration::ProvideMissingTransactionsSuccess(message_provide_missing_transactions);
         Ok(SendTo::Respond(message_enum))

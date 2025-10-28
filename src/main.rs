@@ -6,6 +6,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
+pub static DECLARE_JOB_TIME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 use crate::{monitor::logs::SendLogLayer, shared::utils::AbortOnDrop};
 use config::Configuration;
 use key_utils::Secp256k1PublicKey;
@@ -33,7 +35,7 @@ const MIN_EXTRANONCE_SIZE: u16 = 6;
 const MIN_EXTRANONCE2_SIZE: u16 = 5;
 const UPSTREAM_EXTRANONCE1_SIZE: usize = 15;
 const DEFAULT_SV1_HASHPOWER: f32 = 100_000_000_000_000.0;
-const SHARE_PER_MIN: f32 = 10.0;
+const SHARE_PER_MIN: f32 = 1000.0;
 const CHANNEL_DIFF_UPDTATE_INTERVAL: u32 = 10;
 const MAX_LEN_DOWN_MSG: u32 = 10000;
 const MAIN_AUTH_PUB_KEY: &str = "9c44K6QVizyPWb9xfeqhckFRosxWwB3EfytGa4CfTdD526qb2QV";

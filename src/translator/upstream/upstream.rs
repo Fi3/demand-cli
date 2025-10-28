@@ -518,6 +518,8 @@ impl ParseUpstreamMiningMessages<Downstream, NullDownstreamMiningSelector, NoRou
         &mut self,
         m: roles_logic_sv2::mining_sv2::OpenExtendedMiningChannelSuccess,
     ) -> Result<SendTo<Downstream>, RolesLogicError> {
+        println!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA {:?}", m.extranonce_prefix);
+
         info!(
             "Handling OpenExtendedMiningChannelSuccess message from Pool for Channel Id: {}",
             m.channel_id

@@ -145,7 +145,7 @@ impl JobDeclarator {
         self_mutex
             .safe_lock(|s| {
                 //check hashmap size in order to not let it grow indefinetely
-                if s.last_declare_mining_jobs_sent.len() < 10 {
+                if s.last_declare_mining_jobs_sent.len() < 1000 {
                     s.last_declare_mining_jobs_sent.insert(request_id, Some(j));
                 } else if let Some(min_key) = s.last_declare_mining_jobs_sent.keys().min().cloned()
                 {
@@ -235,7 +235,14 @@ impl JobDeclarator {
             tokio::task::yield_now().await;
         }
         println!("YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY");
+        let start = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
         super::IS_CUSTOM_JOB_SET.store(false, std::sync::atomic::Ordering::Release);
+        // now as u64 unix time
+        crate::DECLARE_JOB_TIME.store(start as u64, std::sync::atomic::Ordering::Release);
         let (id, _, sender) = self_mutex
             .safe_lock(|s| (s.req_ids.next(), s.min_extranonce_size, s.sender.clone()))
             .map_err(|_| Error::JobDeclaratorMutexCorrupted)?;
@@ -282,19 +289,26 @@ impl JobDeclarator {
             coinbase_pool_output,
             tx_list: tx_list_.clone(),
         };
-        dbg!(Self::update_last_declare_job_sent(
+        Self::update_last_declare_job_sent(
             self_mutex,
             id,
             last_declare
-        ))?;
+        ).unwrap();
         let frame: StdFrame =
             PoolMessages::JobDeclaration(JobDeclaration::DeclareMiningJob(declare_job))
                 .try_into()
                 .expect("Infallable operation");
-        sender
+        let res = sender
             .send(frame.into())
             .await
-            .map_err(|_| Error::Unrecoverable)
+            .map_err(|_| Error::Unrecoverable);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let elapsed_ms = now.saturating_sub(start);
+        info!("Sent declare with req id: {}, elapsed_ms: {:?}", id, elapsed_ms);
+        res
     }
 
     pub async fn on_upstream_message(

@@ -195,6 +195,9 @@ impl Bridge {
         mut rx_sv1_downstream: tokio::sync::mpsc::Receiver<DownstreamMessages>,
     ) -> JoinHandle<()> {
         tokio::task::spawn(async move {
+            let mut rej: u64 = 0;
+            let mut acc: u64 = 0;
+            let mut sent: u64 = 0;
             loop {
                 let msg = match rx_sv1_downstream.recv().await {
                     Some(msg) => msg,
@@ -207,11 +210,14 @@ impl Bridge {
 
                 match msg {
                     DownstreamMessages::SubmitShares(share) => {
-                        if let Err(e) = Self::handle_submit_shares(self_.clone(), share).await {
+                        sent += 1;
+                        if let Err(e) = Self::handle_submit_shares(self_.clone(), share, &mut rej, &mut acc).await {
+                            println!("BRIDGE: rej {} acc {} sent {}", rej, acc, sent);
                             error!("Failed to handle SubmitShareWithChannelId: {e}");
                             ProxyState::update_translator_state(TranslatorState::Down);
                             break;
                         }
+                        println!("BRIDGE: rej {} acc {} sent {}", rej, acc, sent);
                     }
                     DownstreamMessages::SetDownstreamTarget(new_target) => {
                         if let Err(e) =
@@ -246,6 +252,8 @@ impl Bridge {
     async fn handle_submit_shares(
         self_: Arc<Mutex<Self>>,
         share: SubmitShareWithChannelId,
+        rej: &mut u64,
+        acc: &mut u64,
     ) -> ProxyResult<'static, ()> {
         let channel_id = share.channel_id;
         let job_id = share.share.job_id.clone();
@@ -272,6 +280,7 @@ impl Bridge {
                 let job_id = share.share.job_id.parse::<u32>().expect("Invalid job_id");
                 if s.channel_factory.job(job_id).is_none() {
                     warn!("Share rejected: job_id {} not in last three jobs", job_id);
+                    *rej += 1;
                     return Err(roles_logic_sv2::Error::ShareDoNotMatchAnyJob); // rejected
                 }
                 s.channel_factory.set_target(&mut upstream_target);
@@ -285,6 +294,7 @@ impl Bridge {
                             .on_submit_shares_extended(submit_shares_extended)
                     }
                     Err(_) => {
+                        *rej += 1;
                         Err(roles_logic_sv2::Error::NoValidJob) // Error will be handled by the caller
                     }
                 }
@@ -293,6 +303,7 @@ impl Bridge {
 
         match res {
             Ok(OnNewShare::SendErrorDownstream(e)) => {
+                *rej += 1;
                 let error_code = std::str::from_utf8(&e.error_code.to_vec()[..])
                     .unwrap_or("unparsable error code")
                     .to_string();
@@ -302,6 +313,7 @@ impl Bridge {
                 );
             }
             Ok(OnNewShare::SendSubmitShareUpstream((s, _))) => {
+                *acc += 1;
                 if let Ok(is_rate_limited) = allow_submit_share() {
                     if !is_rate_limited {
                         warn!("Share will not be sent upstream: Exceeded 70 shares/min limit");
@@ -322,6 +334,7 @@ impl Bridge {
                         Share::Standard(_) => unreachable!(),
                     }
                 } else {
+                    *rej += 1;
                     error!("Failed to record share: Bridge mutex poisoned");
                     ProxyState::update_inconsistency(Some(1));
                     return Err(Error::BridgeMutexPoisoned);
@@ -338,6 +351,7 @@ impl Bridge {
             // Proxy do not have JD capabilities
             Ok(OnNewShare::ShareMeetBitcoinTarget(..)) => unreachable!(),
             Err(roles_logic_sv2::Error::NoValidJob) => {
+                *rej += 1;
                 let count = SUBMIT_FAIL_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
                 if count >= 10 {
                     error!("Failed to translate SV1 mining.submit message to SV2 SubmitSharesExtended message after 10 attempts");
@@ -350,12 +364,14 @@ impl Bridge {
                 }
             }
             Err(roles_logic_sv2::Error::ShareDoNotMatchAnyJob) => {
+                *rej += 1;
                 warn!(
                     "Channel factory can not get this share's job_id: {}",
                     job_id
                 );
             }
             Err(e) => {
+                *rej += 1;
                 return Err(Error::RolesSv2Logic(e));
             }
         }
