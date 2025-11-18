@@ -32,6 +32,29 @@ use lazy_static::lazy_static;
 use roles_logic_sv2::{channel_logic::channel_factory::OnNewShare, Error as RolesLogicError};
 use tracing::{debug, error, info, warn};
 
+#[derive(Debug, Default)]
+struct Rej {
+    pub bridge_channel_factory_do_not_have_block: u32,
+    pub translate_submit_fail: u32,
+    pub send_error_down: u32,
+    pub failed_to_record_share: u32,
+    pub err_1: u32,
+    pub err_2: u32,
+    pub err_3: u32,
+}
+impl Rej {
+    pub fn new() -> Self {
+        Rej {
+            bridge_channel_factory_do_not_have_block: 0,
+            translate_submit_fail: 0,
+            send_error_down: 0,
+            failed_to_record_share: 0,
+            err_1: 0,
+            err_2: 0,
+            err_3: 0,
+        }
+    }
+}
 lazy_static! {
     static ref SUBMIT_FAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
 }
@@ -195,9 +218,10 @@ impl Bridge {
         mut rx_sv1_downstream: tokio::sync::mpsc::Receiver<DownstreamMessages>,
     ) -> JoinHandle<()> {
         tokio::task::spawn(async move {
-            let mut rej: u64 = 0;
+            let mut rej = Rej::new();
             let mut acc: u64 = 0;
             let mut sent: u64 = 0;
+
             loop {
                 let msg = match rx_sv1_downstream.recv().await {
                     Some(msg) => msg,
@@ -210,14 +234,15 @@ impl Bridge {
 
                 match msg {
                     DownstreamMessages::SubmitShares(share) => {
+                        //println!("Received downstream for job with id {:?} {:?}", share.share.job_id, std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis());
                         sent += 1;
                         if let Err(e) = Self::handle_submit_shares(self_.clone(), share, &mut rej, &mut acc).await {
-                            println!("BRIDGE: rej {} acc {} sent {}", rej, acc, sent);
+                            println!("BRIDGE: rej {:?} acc {} sent {}", rej, acc, sent);
                             error!("Failed to handle SubmitShareWithChannelId: {e}");
                             ProxyState::update_translator_state(TranslatorState::Down);
                             break;
                         }
-                        println!("BRIDGE: rej {} acc {} sent {}", rej, acc, sent);
+                        println!("BRIDGE: rej {:?} acc {} sent {}", rej, acc, sent);
                     }
                     DownstreamMessages::SetDownstreamTarget(new_target) => {
                         if let Err(e) =
@@ -252,7 +277,7 @@ impl Bridge {
     async fn handle_submit_shares(
         self_: Arc<Mutex<Self>>,
         share: SubmitShareWithChannelId,
-        rej: &mut u64,
+        rej: &mut Rej,
         acc: &mut u64,
     ) -> ProxyResult<'static, ()> {
         let channel_id = share.channel_id;
@@ -279,8 +304,10 @@ impl Bridge {
             .safe_lock(|s| {
                 let job_id = share.share.job_id.parse::<u32>().expect("Invalid job_id");
                 if s.channel_factory.job(job_id).is_none() {
+                    println!("Refused share for job with id {:?} {:?}", job_id, std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis());
+                    //panic!("{:?}", job_id);
                     warn!("Share rejected: job_id {} not in last three jobs", job_id);
-                    *rej += 1;
+                    rej.bridge_channel_factory_do_not_have_block += 1;
                     return Err(roles_logic_sv2::Error::ShareDoNotMatchAnyJob); // rejected
                 }
                 s.channel_factory.set_target(&mut upstream_target);
@@ -294,7 +321,7 @@ impl Bridge {
                             .on_submit_shares_extended(submit_shares_extended)
                     }
                     Err(_) => {
-                        *rej += 1;
+                        rej.translate_submit_fail += 1;
                         Err(roles_logic_sv2::Error::NoValidJob) // Error will be handled by the caller
                     }
                 }
@@ -303,7 +330,7 @@ impl Bridge {
 
         match res {
             Ok(OnNewShare::SendErrorDownstream(e)) => {
-                *rej += 1;
+                rej.send_error_down += 1;
                 let error_code = std::str::from_utf8(&e.error_code.to_vec()[..])
                     .unwrap_or("unparsable error code")
                     .to_string();
@@ -334,7 +361,7 @@ impl Bridge {
                         Share::Standard(_) => unreachable!(),
                     }
                 } else {
-                    *rej += 1;
+                    rej.failed_to_record_share += 1;
                     error!("Failed to record share: Bridge mutex poisoned");
                     ProxyState::update_inconsistency(Some(1));
                     return Err(Error::BridgeMutexPoisoned);
@@ -351,7 +378,7 @@ impl Bridge {
             // Proxy do not have JD capabilities
             Ok(OnNewShare::ShareMeetBitcoinTarget(..)) => unreachable!(),
             Err(roles_logic_sv2::Error::NoValidJob) => {
-                *rej += 1;
+                rej.err_1 += 1;
                 let count = SUBMIT_FAIL_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
                 if count >= 10 {
                     error!("Failed to translate SV1 mining.submit message to SV2 SubmitSharesExtended message after 10 attempts");
@@ -364,14 +391,14 @@ impl Bridge {
                 }
             }
             Err(roles_logic_sv2::Error::ShareDoNotMatchAnyJob) => {
-                *rej += 1;
+                rej.err_2 += 1;
                 warn!(
                     "Channel factory can not get this share's job_id: {}",
                     job_id
                 );
             }
             Err(e) => {
-                *rej += 1;
+                rej.err_3 += 1;
                 return Err(Error::RolesSv2Logic(e));
             }
         }
@@ -447,6 +474,7 @@ impl Bridge {
         {
             tokio::task::yield_now().await;
         }
+        //println!("DIO LUPETTO {}", std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis());
         self_
             .safe_lock(|s| s.last_p_hash = Some(sv2_set_new_prev_hash.clone()))
             .map_err(|_| Error::BridgeMutexPoisoned)?;
@@ -458,6 +486,7 @@ impl Bridge {
             })
             .map_err(|_| Error::BridgeMutexPoisoned)??;
 
+        //println!("DIO LUPASTRO {}", std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis());
         let mut future_jobs = self_
             .safe_lock(|s| {
                 let future_jobs = s.future_jobs.clone();
@@ -471,7 +500,9 @@ impl Bridge {
             .map_err(|_| Error::BridgeMutexPoisoned)?;
 
         let mut match_a_future_job = false;
+        dbg!(&future_jobs.len());
         while let Some(job) = future_jobs.pop() {
+            dbg!(&job.job_id);
             if job.job_id == sv2_set_new_prev_hash.job_id {
                 // Create the mining.notify to be sent to the Downstream.
                 let notify = super::super::proxy::next_mining_notify::create_notify(
@@ -528,6 +559,7 @@ impl Bridge {
                             break;
                         }
                     };
+                //println!("Received SNPH {}", std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis());
                 let mut dbg_prev_hash = sv2_set_new_prev_hash.prev_hash.to_vec();
                 dbg_prev_hash.reverse();
                 debug!(
@@ -572,6 +604,7 @@ impl Bridge {
         // If future_job=true, this job is meant for a future SetNewPrevHash that the proxy
         // has yet to receive. Insert this new job into the job_mapper .
         if sv2_new_extended_mining_job.is_future() {
+            //println!("NEW JOB DOWN {:?} {}",sv2_new_extended_mining_job, std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis());
             self_
                 .safe_lock(|s| s.future_jobs.push(sv2_new_extended_mining_job.clone()))
                 .map_err(|_| Error::BridgeMutexPoisoned)?;

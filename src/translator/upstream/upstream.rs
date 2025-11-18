@@ -88,6 +88,7 @@ pub struct Upstream {
     pub sender: TSender<Mining<'static>>,
     sent_up: u32,
     rejected: u32,
+    toa: Vec<std::time::Instant>,
 }
 
 impl PartialEq for Upstream {
@@ -127,6 +128,7 @@ impl Upstream {
             sender,
             sent_up: 0,
             rejected: 0,
+            toa: Vec::new(),
         })))
     }
 
@@ -227,6 +229,7 @@ impl Upstream {
         let main_loop_handle = {
             let self_ = self_.clone();
             task::spawn(async move {
+                let mut future_j = None;
                 while let Some(m) = receiver.recv().await {
                     let routing_logic = MiningRoutingLogic::None;
 
@@ -305,31 +308,55 @@ impl Upstream {
                                 }
                                 Mining::NewExtendedMiningJob(m) => {
                                     info!("Parsing incoming NewExtendedMiningJob message from Pool for Channel Id: {}", m.channel_id);
-                                    let job_id = m.job_id;
-
-                                    if let Err(e) = self_.safe_lock(|s| {
-                                        let _ = s.job_id.insert(job_id);
-                                    }) {
-                                        error!("Translator upstream mutex poisoned: {e}");
-                                        return;
-                                    };
-                                    if tx_sv2_new_ext_mining_job.send(m).await.is_err() {
-                                        error!("Failed to send NewExtendedMiningJob");
-                                        return;
-                                    };
+                                    //println!("NEW JOB UP {:?} {}",m, std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis());
+                                    if m.is_future() {
+                                        future_j = Some(m)
+                                    } else {
+                                        let job_id = m.job_id;
+                                        if let Err(e) = self_.safe_lock(|s| {
+                                            let _ = s.job_id.insert(job_id);
+                                        }) {
+                                            error!("Translator upstream mutex poisoned: {e}");
+                                            return;
+                                        };
+                                        if tx_sv2_new_ext_mining_job.send(m).await.is_err() {
+                                            error!("Failed to send NewExtendedMiningJob");
+                                            return;
+                                        };
+                                    }
                                 }
                                 Mining::SetNewPrevHash(m) => {
-                                    if tx_sv2_set_new_prev_hash.send(m).await.is_err() {
-                                        error!("Failed to send SetNewPrevHash");
-                                        return;
-                                    };
+                                    info!("Parsing incoming SetNewPrevHash message from Pool for Channel Id: {}", m.channel_id);
+                                    if let Some(j) = future_j.clone() {
+                                        future_j = None;
+                                        let job_id = m.job_id;
+                                        if let Err(e) = self_.safe_lock(|s| {
+                                            let _ = s.job_id.insert(job_id);
+                                        }) {
+                                            error!("Translator upstream mutex poisoned: {e}");
+                                            return;
+                                        };
+                                        if tx_sv2_new_ext_mining_job.send(j).await.is_err() {
+                                            error!("Failed to send NewExtendedMiningJob");
+                                            return;
+                                        };
+                                        if tx_sv2_set_new_prev_hash.send(m).await.is_err() {
+                                            error!("Failed to send SetNewPrevHash");
+                                            return;
+                                        };
+                                    } else {
+                                        if tx_sv2_set_new_prev_hash.send(m).await.is_err() {
+                                            error!("Failed to send SetNewPrevHash");
+                                            return;
+                                        };
+                                    }
                                 }
                                 Mining::CloseChannel(_m) => {
                                     todo!()
                                 }
                                 Mining::OpenMiningChannelError(_)
                                 | Mining::UpdateChannelError(_)
-                                | Mining::SubmitSharesError(_)
+
                                 | Mining::SetCustomMiningJobError(_) => {
                                     todo!();
                                 }
@@ -389,6 +416,8 @@ impl Upstream {
                     };
 
                     sv2_submit.channel_id = channel_id;
+                    //println!("submit: {:?}", sv2_submit);
+                    //println!("submit: {:?}", sv2_submit.extranonce);
 
                     let message =
                         roles_logic_sv2::parsers::Mining::SubmitSharesExtended(sv2_submit);
@@ -400,7 +429,8 @@ impl Upstream {
                     self_
                         .safe_lock(|s| {
                             s.sent_up = s.sent_up + 1;
-                            println!("accepted: {}/{}", s.sent_up, s.rejected);
+                            let avg = avg_seconds_between(&s.toa);
+                            println!("accepted: {}/{} avg_toa {} blocks {}", s.sent_up, s.rejected, avg, s.toa.len());
                         })
                         .unwrap();
                 }
@@ -518,7 +548,7 @@ impl ParseUpstreamMiningMessages<Downstream, NullDownstreamMiningSelector, NoRou
         &mut self,
         m: roles_logic_sv2::mining_sv2::OpenExtendedMiningChannelSuccess,
     ) -> Result<SendTo<Downstream>, RolesLogicError> {
-        println!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA {:?}", m.extranonce_prefix);
+        //println!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA {:?}", m.extranonce_prefix);
 
         info!(
             "Handling OpenExtendedMiningChannelSuccess message from Pool for Channel Id: {}",
@@ -648,6 +678,8 @@ impl ParseUpstreamMiningMessages<Downstream, NullDownstreamMiningSelector, NoRou
         if self.is_work_selection_enabled() {
             Ok(SendTo::None(None))
         } else {
+            let now = std::time::Instant::now();
+            self.toa.push(now);
             let message = Mining::SetNewPrevHash(m.into_static());
             Ok(SendTo::None(Some(message)))
         }
@@ -706,4 +738,17 @@ fn u256_max() -> U256<'static> {
     let u256 = vec![255_u8; 32];
     let u256: U256 = u256.try_into().expect("Internal error: this operation can not fail because the vec![255_u8; 32] can always be converted into U256");
     u256
+}
+
+fn avg_seconds_between(instants: &[std::time::Instant]) -> f64 {
+    if instants.len() < 2 {
+        return 0.0
+    };
+
+    let total_secs: f64 = instants
+        .windows(2)
+        .map(|w| w[1].duration_since(w[0]).as_secs_f64())
+        .sum();
+
+    total_secs / (instants.len() - 1) as f64
 }

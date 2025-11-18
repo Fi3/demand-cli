@@ -405,6 +405,7 @@ impl Downstream {
 
 /// Implements `IsServer` for `Downstream` to handle the SV1 messages.
 impl IsServer<'static> for Downstream {
+    fn handle_suggest_difficulty(&mut self, _: &sv1_api::client_to_server::SuggestDifficulty) { todo!() }
     /// Handle the incoming `mining.configure` message which is received after a Downstream role is
     /// subscribed and authorized. Contains the version rolling mask parameters.
     fn handle_configure(
