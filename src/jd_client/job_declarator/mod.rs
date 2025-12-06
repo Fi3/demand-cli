@@ -86,6 +86,7 @@ pub struct JobDeclarator {
     pub coinbase_tx_prefix: B064K<'static>,
     pub coinbase_tx_suffix: B064K<'static>,
     pub task_manager: Arc<Mutex<TaskManager>>,
+    pub debug_wtxid: HashMap<Txid,Wtxid>,
 }
 
 impl JobDeclarator {
@@ -129,6 +130,7 @@ impl JobDeclarator {
             coinbase_tx_suffix: vec![].try_into().expect("Internal error: this operation can not fail because Vec can always be converted into Inner"),
             set_new_prev_hash_counter: 0,
             task_manager,
+            debug_wtxid: HashMap::new(),
         }));
 
         Self::allocate_tokens(&self_, 2).await;
@@ -260,9 +262,22 @@ impl JobDeclarator {
                 bitcoin::consensus::deserialize(&tx);
             match transaction {
                 Ok(tx) => {
-                    let id: U256 = tx.compute_txid().to_raw_hash().to_byte_array().into();
+                    let txid = tx.compute_txid();
+                    let wtxid = tx.compute_wtxid();
+                    let id: U256 = wtxid.to_raw_hash().to_byte_array().into();
                     tx_list.push(tx);
                     tx_ids.push(id);
+                    self_mutex.safe_lock(|s| {
+                        match s.debug_wtxid.get(&txid) {
+                            Some(wtxid_) => {
+                                if wtxid != *wtxid_ {
+                                    error!("wtxid do not match: {:?} != {:?} for txid: {:?}", wtxid, wtxid_, txid);
+                                }
+                            },
+                            _ => (),
+                        };
+                        s.debug_wtxid.insert(txid, wtxid);
+                    }).unwrap();
                 }
                 Err(_) => {
                     error!("Failed to deserailize transaction");
