@@ -43,6 +43,12 @@ struct Args {
     tp_address: Option<String>,
     #[clap(long)]
     listening_addr: Option<String>,
+    #[clap(long = "sv2-listening-addr")]
+    sv2_listening_addr: Option<String>,
+    #[clap(long = "sv2-auth-secret")]
+    sv2_auth_secret: Option<String>,
+    #[clap(long = "min-extranonce2-size")]
+    min_extranonce2_size: Option<u16>,
     #[clap(long = "config", short = 'c')]
     config_file: Option<PathBuf>,
     #[clap(long = "api-server-port", short = 's')]
@@ -69,6 +75,9 @@ struct ConfigFile {
     local: Option<bool>,
     testnet3: Option<bool>,
     listening_addr: Option<String>,
+    sv2_listening_addr: Option<String>,
+    sv2_auth_secret: Option<String>,
+    min_extranonce2_size: Option<u16>,
     api_server_port: Option<String>,
     monitor: Option<bool>,
     auto_update: Option<bool>,
@@ -89,6 +98,9 @@ impl ConfigFile {
             testnet3: None,
             local: None,
             listening_addr: None,
+            sv2_listening_addr: None,
+            sv2_auth_secret: None,
+            min_extranonce2_size: None,
             api_server_port: None,
             monitor: None,
             auto_update: None,
@@ -110,6 +122,9 @@ pub struct Configuration {
     testnet3: bool,
     local: bool,
     listening_addr: Option<String>,
+    sv2_listening_addr: Option<String>,
+    sv2_auth_secret: Option<String>,
+    min_extranonce2_size: u16,
     api_server_port: String,
     monitor: bool,
     auto_update: bool,
@@ -148,6 +163,15 @@ impl Configuration {
 
     pub fn downstream_listening_addr() -> Option<String> {
         CONFIG.listening_addr.clone()
+    }
+    pub fn sv2_listening_addr() -> Option<String> {
+        CONFIG.sv2_listening_addr.clone()
+    }
+    pub fn sv2_auth_secret() -> Option<String> {
+        CONFIG.sv2_auth_secret.clone()
+    }
+    pub fn min_extranonce2_size() -> u16 {
+        CONFIG.min_extranonce2_size
     }
 
     pub fn api_server_port() -> String {
@@ -243,7 +267,16 @@ impl Configuration {
 
         let signature = match args.signature {
             Some(s) => {
-                if s.len() == 2 {
+                let s = s.trim();
+                if s.is_empty()
+                    || s.eq_ignore_ascii_case("none")
+                    || s.eq_ignore_ascii_case("off")
+                    || s.eq_ignore_ascii_case("disable")
+                    || s.eq_ignore_ascii_case("disabled")
+                {
+                    println!("Signature disabled");
+                    String::new()
+                } else if s.len() == 2 {
                     println!("Signature provided: DDx{}", s);
                     format!("DDx{}", s)
                 } else {
@@ -307,6 +340,23 @@ impl Configuration {
                 .ok()
                 .and_then(|s| s.parse().ok())
         });
+        let sv2_listening_addr =
+            args.sv2_listening_addr
+                .or(config.sv2_listening_addr)
+                .or_else(|| std::env::var("SV2_LISTEN_ADDR").ok());
+        let sv2_auth_secret =
+            args.sv2_auth_secret
+                .or(config.sv2_auth_secret)
+                .or_else(|| std::env::var("SV2_AUTH_SECRET").ok());
+        let min_extranonce2_size = args
+            .min_extranonce2_size
+            .or(config.min_extranonce2_size)
+            .or_else(|| {
+                std::env::var("MIN_EXTRANONCE2_SIZE")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(crate::MIN_EXTRANONCE2_SIZE);
         let api_server_port = args
             .api_server_port
             .or(config.api_server_port)
@@ -361,6 +411,9 @@ impl Configuration {
             testnet3,
             local,
             listening_addr,
+            sv2_listening_addr,
+            sv2_auth_secret,
+            min_extranonce2_size,
             api_server_port,
             monitor,
             auto_update,

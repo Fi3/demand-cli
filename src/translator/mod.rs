@@ -1,4 +1,5 @@
 mod downstream;
+mod downstream_sv2;
 
 mod error;
 mod proxy;
@@ -18,6 +19,7 @@ use sv1_api::server_to_client;
 use tokio::sync::broadcast;
 
 use crate::{
+    config::Configuration,
     proxy_state::{ProxyState, TranslatorState},
     shared::utils::AbortOnDrop,
 };
@@ -29,6 +31,7 @@ use task_manager::TaskManager;
 
 pub async fn start(
     downstreams: TReceiver<(TSender<String>, TReceiver<String>, IpAddr)>,
+    sv2_downstreams: TReceiver<(TSender<Mining<'static>>, TReceiver<Mining<'static>>, IpAddr)>,
     pool_connection: TSender<(
         TSender<Mining<'static>>,
         TReceiver<Mining<'static>>,
@@ -98,7 +101,7 @@ pub async fn start(
     let upstream = upstream::Upstream::new(
         tx_sv2_set_new_prev_hash,
         tx_sv2_new_ext_mining_job,
-        crate::MIN_EXTRANONCE_SIZE - 1,
+        Configuration::min_extranonce2_size(),
         tx_sv2_extranonce,
         target.clone(),
         diff_config.clone(),
@@ -171,19 +174,27 @@ pub async fn start(
                 }
             };
 
-            let downstream_aborter = match downstream::Downstream::accept_connections(
-                tx_sv1_bridge,
-                tx_sv1_notify,
-                b,
-                diff_config,
-                downstreams,
-                stats_sender,
-            )
-            .await
-            {
+        let downstream_aborter = match downstream::Downstream::accept_connections(
+            tx_sv1_bridge,
+            tx_sv1_notify,
+            b.clone(),
+            diff_config,
+            downstreams,
+            stats_sender,
+        )
+        .await
+        {
+            Ok(abortable) => abortable,
+            Err(e) => {
+                error!("Downstream failed to accept connection: {e}");
+                return;
+            }
+        };
+        let sv2_downstream_aborter =
+            match downstream_sv2::accept_connections(b.clone(), sv2_downstreams).await {
                 Ok(abortable) => abortable,
                 Err(e) => {
-                    error!("Downstream failed to accept connection: {e}");
+                    error!("SV2 downstream failed to accept connection: {e}");
                     return;
                 }
             };
@@ -196,12 +207,18 @@ pub async fn start(
                 return;
             };
 
-            if TaskManager::add_downstream_listener(task_manager.clone(), downstream_aborter)
-                .await
-                .is_err()
-            {
-                error!("{}", Error::TranslatorTaskManagerFailed);
-            }
+        if TaskManager::add_downstream_listener(task_manager.clone(), downstream_aborter)
+            .await
+            .is_err()
+        {
+            error!("{}", Error::TranslatorTaskManagerFailed);
+        }
+        if TaskManager::add_downstream_listener(task_manager.clone(), sv2_downstream_aborter)
+            .await
+            .is_err()
+        {
+            error!("{}", Error::TranslatorTaskManagerFailed);
+        }
         })
     };
     TaskManager::add_startup_task(task_manager.clone(), startup_task.into())

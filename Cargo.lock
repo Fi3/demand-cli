@@ -757,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "dmnd-client"
-version = "0.2.4"
+version = "0.3.4"
 dependencies = [
  "async-recursion",
  "axum",
@@ -780,6 +780,7 @@ dependencies = [
  "rand 0.8.5",
  "reqwest",
  "roles_logic_sv2",
+ "secp256k1 0.28.2",
  "self_update",
  "serde",
  "serde_json",

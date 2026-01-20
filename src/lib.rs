@@ -186,10 +186,14 @@ async fn initialize_proxy(
 
         let (downs_sv1_tx, downs_sv1_rx) = channel(10);
         let sv1_ingress_abortable = ingress::sv1_ingress::start_listen_for_downstream(downs_sv1_tx);
+        let (downs_sv2_tx, downs_sv2_rx) = channel(10);
+        let sv2_ingress_abortable =
+            ingress::sv2_ingress::start_listen_for_sv2_downstream(downs_sv2_tx);
 
         let (translator_up_tx, mut translator_up_rx) = channel(10);
         let translator_abortable = match translator::start(
             downs_sv1_rx,
+            downs_sv2_rx,
             translator_up_tx,
             stats_sender.clone(),
             signature.clone(),
@@ -274,6 +278,9 @@ async fn initialize_proxy(
             (translator_abortable, "translator".to_string()),
             (share_accounter_abortable, "share_accounter".to_string()),
         ];
+        if let Some(sv2_handle) = sv2_ingress_abortable {
+            abort_handles.push((sv2_handle, "sv2_ingress".to_string()));
+        }
         if let Some(jdc_handle) = jdc_abortable {
             abort_handles.push((jdc_handle, "jdc".to_string()));
         }

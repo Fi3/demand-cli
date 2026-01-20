@@ -1,10 +1,12 @@
 use bitcoin::hex::DisplayHex;
+use std::collections::HashMap;
 use tokio::task::JoinHandle;
 
 use roles_logic_sv2::{
     channel_logic::channel_factory::{ExtendedChannelKind, ProxyExtendedChannelFactory, Share},
     mining_sv2::{
-        ExtendedExtranonce, NewExtendedMiningJob, SetNewPrevHash, SubmitSharesExtended, Target,
+        ExtendedExtranonce, NewExtendedMiningJob, SetNewPrevHash, SubmitSharesExtended,
+        SubmitSharesSuccess, Target,
     },
     parsers::Mining,
     utils::{GroupId, Mutex},
@@ -63,6 +65,7 @@ pub struct Bridge {
     future_jobs: Vec<NewExtendedMiningJob<'static>>,
     last_p_hash: Option<SetNewPrevHash<'static>>,
     target: Arc<Mutex<Vec<u8>>>,
+    sv2_downstreams: HashMap<u32, tokio::sync::mpsc::Sender<Mining<'static>>>,
 }
 
 impl Bridge {
@@ -107,6 +110,7 @@ impl Bridge {
             future_jobs: vec![],
             last_p_hash: None,
             target,
+            sv2_downstreams: HashMap::new(),
         })))
     }
 
@@ -148,6 +152,137 @@ impl Bridge {
                 error!("{}", e);
                 Err(Error::RolesSv2Logic(e))
             }
+        }
+    }
+
+    pub fn register_sv2_downstream(
+        &mut self,
+        channel_id: u32,
+        sender: tokio::sync::mpsc::Sender<Mining<'static>>,
+    ) {
+        self.sv2_downstreams.insert(channel_id, sender);
+    }
+
+    pub fn unregister_sv2_downstream(&mut self, channel_id: u32) {
+        self.sv2_downstreams.remove(&channel_id);
+    }
+
+    pub fn open_sv2_channel(
+        &mut self,
+        request_id: u32,
+        hash_rate: f32,
+        min_extranonce_size: u16,
+    ) -> ProxyResult<'static, (Vec<Mining<'static>>, Option<u32>)> {
+        match self
+            .channel_factory
+            .new_extended_channel(request_id, hash_rate, min_extranonce_size)
+        {
+            Ok(messages) => {
+                let mut channel_id = None;
+                let messages: Vec<Mining<'static>> = messages
+                    .into_iter()
+                    .map(|m| {
+                        if let Mining::OpenExtendedMiningChannelSuccess(success) = &m {
+                            channel_id = Some(success.channel_id);
+                        }
+                        m.into_static()
+                    })
+                    .collect();
+                Ok((messages, channel_id))
+            }
+            Err(e) => Err(Error::RolesSv2Logic(e)),
+        }
+    }
+
+    pub async fn handle_sv2_submit_shares(
+        self_: Arc<Mutex<Self>>,
+        share: SubmitSharesExtended<'static>,
+    ) -> ProxyResult<'static, Option<Mining<'static>>> {
+        let channel_id = share.channel_id;
+        let sequence_number = share.sequence_number;
+        let (tx_sv2_submit_shares_ext, target_mutex) = self_
+            .safe_lock(|s| (s.tx_sv2_submit_shares_ext.clone(), s.target.clone()))
+            .map_err(|_| Error::BridgeMutexPoisoned)?;
+        let upstream_target: [u8; 32] = target_mutex
+            .safe_lock(|t| t.clone())
+            .map_err(|_| Error::BridgeMutexPoisoned)?
+            .try_into()
+            .expect("Internal error: vec target should be 32 bytes");
+        let mut upstream_target: Target = upstream_target.into();
+
+        let res = self_
+            .safe_lock(|s| {
+                s.channel_factory.set_target(&mut upstream_target);
+                s.channel_factory.on_submit_shares_extended(share)
+            })
+            .map_err(|_| Error::BridgeMutexPoisoned)?;
+
+        match res {
+            Ok(OnNewShare::SendErrorDownstream(err)) => {
+                Ok(Some(Mining::SubmitSharesError(err)))
+            }
+            Ok(OnNewShare::SendSubmitShareUpstream((Share::Extended(share), _))) => {
+                let allow = allow_submit_share().map_err(|_| Error::BridgeMutexPoisoned)?;
+                if allow {
+                    if tx_sv2_submit_shares_ext.send(share).await.is_err() {
+                        return Err(Error::AsyncChannelError);
+                    }
+                } else {
+                    warn!("Share will not be sent upstream: rate limit exceeded");
+                }
+                let success = SubmitSharesSuccess {
+                    channel_id,
+                    last_sequence_number: sequence_number,
+                    new_submits_accepted_count: 1,
+                    new_shares_sum: 1,
+                };
+                Ok(Some(Mining::SubmitSharesSuccess(success)))
+            }
+            Ok(OnNewShare::ShareMeetDownstreamTarget) => {
+                let success = SubmitSharesSuccess {
+                    channel_id,
+                    last_sequence_number: sequence_number,
+                    new_submits_accepted_count: 1,
+                    new_shares_sum: 1,
+                };
+                Ok(Some(Mining::SubmitSharesSuccess(success)))
+            }
+            Ok(OnNewShare::ShareMeetBitcoinTarget((Share::Extended(share), _, _, _))) => {
+                let allow = allow_submit_share().map_err(|_| Error::BridgeMutexPoisoned)?;
+                if allow {
+                    if tx_sv2_submit_shares_ext.send(share).await.is_err() {
+                        return Err(Error::AsyncChannelError);
+                    }
+                } else {
+                    warn!("Share will not be sent upstream: rate limit exceeded");
+                }
+                let success = SubmitSharesSuccess {
+                    channel_id,
+                    last_sequence_number: sequence_number,
+                    new_submits_accepted_count: 1,
+                    new_shares_sum: 1,
+                };
+                Ok(Some(Mining::SubmitSharesSuccess(success)))
+            }
+            Ok(OnNewShare::RelaySubmitShareUpstream) => unreachable!(),
+            Ok(OnNewShare::ShareMeetBitcoinTarget(_))
+            | Ok(OnNewShare::SendSubmitShareUpstream(_)) => {
+                warn!("Unexpected share variant for SV2 downstream");
+                Ok(None)
+            }
+            Err(roles_logic_sv2::Error::ShareDoNotMatchAnyJob)
+            | Err(roles_logic_sv2::Error::NoValidJob) => {
+                let error = roles_logic_sv2::mining_sv2::SubmitSharesError {
+                    channel_id,
+                    sequence_number,
+                    error_code: roles_logic_sv2::mining_sv2::SubmitSharesError::invalid_job_id_error_code()
+                        .to_string()
+                        .try_into()
+                        .expect("invalid job id error code fits"),
+                };
+                Ok(Some(Mining::SubmitSharesError(error)))
+            }
+            Err(e) => Err(Error::RolesSv2Logic(e)),
         }
     }
 
@@ -442,6 +577,29 @@ impl Bridge {
             })
             .map_err(|_| Error::BridgeMutexPoisoned)??;
 
+        let sv2_downstreams = self_
+            .safe_lock(|s| s.sv2_downstreams.clone())
+            .map_err(|_| Error::BridgeMutexPoisoned)?;
+        let mut remove_channels = Vec::new();
+        for (channel_id, sender) in sv2_downstreams {
+            let mut new_prev_hash = sv2_set_new_prev_hash.clone();
+            new_prev_hash.channel_id = channel_id;
+            if sender
+                .send(Mining::SetNewPrevHash(new_prev_hash))
+                .await
+                .is_err()
+            {
+                remove_channels.push(channel_id);
+            }
+        }
+        if !remove_channels.is_empty() {
+            let _ = self_.safe_lock(|s| {
+                for id in remove_channels {
+                    s.sv2_downstreams.remove(&id);
+                }
+            });
+        }
+
         let mut future_jobs = self_
             .safe_lock(|s| {
                 let future_jobs = s.future_jobs.clone();
@@ -541,7 +699,7 @@ impl Bridge {
         tx_sv1_notify: broadcast::Sender<server_to_client::Notify<'static>>,
     ) -> Result<(), Error<'static>> {
         // convert to non segwit jobs so we dont have to depend if miner's support segwit or not
-        self_
+        let sv2_messages = self_
             .safe_lock(|s| {
                 s.channel_factory
                     .on_new_extended_mining_job(sv2_new_extended_mining_job.as_static().clone())
@@ -550,6 +708,25 @@ impl Bridge {
             .map_err(|_| {
                 Error::RolesSv2Logic(RolesLogicError::JobIsNotFutureButPrevHashNotPresent)
             })?;
+
+        let sv2_downstreams = self_
+            .safe_lock(|s| s.sv2_downstreams.clone())
+            .map_err(|_| Error::BridgeMutexPoisoned)?;
+        let mut remove_channels = Vec::new();
+        for (channel_id, message) in sv2_messages {
+            if let Some(sender) = sv2_downstreams.get(&channel_id) {
+                if sender.send(message).await.is_err() {
+                    remove_channels.push(channel_id);
+                }
+            }
+        }
+        if !remove_channels.is_empty() {
+            let _ = self_.safe_lock(|s| {
+                for id in remove_channels {
+                    s.sv2_downstreams.remove(&id);
+                }
+            });
+        }
 
         let extranonce_len = self_.safe_lock(|s| s.channel_factory.get_extranonce_len())?;
 

@@ -180,13 +180,16 @@ impl Upstream {
                     .map_err(|_e| Error::TranslatorDiffConfigMutexPoisoned)
             })
             .map_err(|_e| Error::TranslatorUpstreamMutexPoisoned)??;
+        let min_extranonce_size = self_
+            .safe_lock(|u| u.min_extranonce_size)
+            .map_err(|_e| Error::TranslatorUpstreamMutexPoisoned)?;
         let user_identity = "ABC".to_string().try_into().expect("Internal error: this operation can not fail because the string ABC can always be converted into Inner");
         let open_channel = Mining::OpenExtendedMiningChannel(OpenExtendedMiningChannel {
             request_id: 0, // TODO
             user_identity, // TODO
             nominal_hash_rate,
             max_target: u256_max(),
-            min_extranonce_size: crate::MIN_EXTRANONCE2_SIZE,
+            min_extranonce_size,
         });
 
         if sender.send(open_channel).await.is_err() {
@@ -278,6 +281,16 @@ impl Upstream {
                                     // range 1 is the extranonce1 added by the tproxy
                                     // range 2 is the extranonce2 used by the miner for rolling
                                     // range 0 + range 1 is the extranonce1 sent to the miner
+                                    if (m.extranonce_size as usize) < miner_extranonce2_size {
+                                        error!(
+                                            "Invalid extranonce size for Channel Id {}: expected at least {} but got {}",
+                                            m.channel_id,
+                                            miner_extranonce2_size,
+                                            m.extranonce_size
+                                        );
+                                        ProxyState::update_upstream_state(UpstreamType::TranslatorUpstream);
+                                        break;
+                                    }
                                     let tproxy_e1_len = proxy_extranonce1_len(
                                         m.extranonce_size as usize,
                                         miner_extranonce2_size,
@@ -566,10 +579,31 @@ impl ParseUpstreamMiningMessages<Downstream, NullDownstreamMiningSelector, NoRou
             "Handling OpenExtendedMiningChannelSuccess message from Pool for Channel Id: {}",
             m.channel_id
         );
+        let signature_len = self.signature.len() as u16;
+        if m.extranonce_size < signature_len {
+            error!(
+                "Invalid extranonce size for Channel Id {}: expected at least {} but got {}",
+                m.channel_id, signature_len, m.extranonce_size
+            );
+            return Err(RolesLogicError::InvalidExtranonceSize(
+                signature_len,
+                m.extranonce_size,
+            ));
+        }
         let mut prefix = m.extranonce_prefix.to_vec();
         prefix.extend_from_slice(self.signature.as_bytes());
         m.extranonce_prefix = prefix.try_into().unwrap();
-        m.extranonce_size -= self.signature.len() as u16;
+        m.extranonce_size -= signature_len;
+        if m.extranonce_size < self.min_extranonce_size {
+            error!(
+                "Invalid extranonce size for Channel Id {}: expected at least {} but got {}",
+                m.channel_id, self.min_extranonce_size, m.extranonce_size
+            );
+            return Err(RolesLogicError::InvalidExtranonceSize(
+                self.min_extranonce_size,
+                m.extranonce_size,
+            ));
+        }
         let tproxy_e1_len =
             proxy_extranonce1_len(m.extranonce_size as usize, self.min_extranonce_size.into())
                 as u16;
