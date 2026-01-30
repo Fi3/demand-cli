@@ -40,13 +40,21 @@ impl ShareInfo {
 #[derive(Debug, Clone)]
 pub struct SharesMonitor {
     shares: Arc<Mutex<Vec<ShareInfo>>>,
+    token: Arc<Mutex<Option<String>>>,
 }
 
 impl SharesMonitor {
     pub fn new() -> Self {
         SharesMonitor {
             shares: Arc::new(Mutex::new(Vec::new())),
+            token: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn set_token(&self, token: Option<String>) {
+        let _ = self.token.safe_lock(|current| {
+            *current = token;
+        });
     }
 
     /// Inserts a new share into the pending shares list.
@@ -93,17 +101,23 @@ impl SharesMonitor {
             interval.tick().await;
             let shares_to_send = self.get_next_shares();
             if !shares_to_send.is_empty() {
-                match api.send_shares(shares_to_send.clone()).await {
-                    Ok(_) => {
-                        info!(
-                            "Saved {} shares to the monitoring server",
-                            shares_to_send.len()
-                        );
-                        self.clear_next_shares();
+                let token = crate::config::Configuration::token()
+                    .or_else(|| self.token.safe_lock(|t| t.clone()).ok().flatten());
+                if let Some(token) = token {
+                    match api.send_shares(shares_to_send.clone(), &token).await {
+                        Ok(_) => {
+                            info!(
+                                "Saved {} shares to the monitoring server",
+                                shares_to_send.len()
+                            );
+                            self.clear_next_shares();
+                        }
+                        Err(err) => {
+                            warn!("Failed to send shares, this does not affect mining but may cause issues with monitoring: {:?}", err);
+                        }
                     }
-                    Err(err) => {
-                        warn!("Failed to send shares, this does not affect mining but may cause issues with monitoring: {:?}", err);
-                    }
+                } else {
+                    warn!("TOKEN is not set; skipping share monitoring");
                 }
             } else {
                 warn!("No pending shares to send. If this happens frequently, check your miner.");

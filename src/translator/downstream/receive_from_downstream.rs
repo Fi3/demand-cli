@@ -63,29 +63,33 @@ pub async fn start_receive_downstream(
                 error!("Failed to remove downstream hashrate from channel: {}", e)
             };
 
-            let (worker_name, user_agent) = downstream
+            let (worker_name, user_agent, monitor_token) = downstream
                 .safe_lock(|d| {
                     (
                         d.authorized_names.first().cloned().unwrap_or_default(),
                         d.user_agent.borrow().clone(),
+                        d.monitor_token(),
                     )
                 })
                 .unwrap_or_else(|e| {
                     error!("Failed to lock downstream: {:?}", e);
                     ProxyState::update_inconsistency(Some(1));
-                    ("unknown".to_string(), "unknown".to_string())
+                    ("unknown".to_string(), "unknown".to_string(), None)
                 });
 
             let worker_activity =
                 WorkerActivity::new(user_agent, worker_name, WorkerActivityType::Disconnected);
 
-            worker_activity
-                .monitor_api()
-                .send_worker_activity(worker_activity)
-                .await
-                .unwrap_or_else(|e| {
-                    error!("Failed to send worker activity: {}", e);
-                });
+            let token_to_use = crate::config::Configuration::token().or(monitor_token);
+            if let Some(token) = token_to_use {
+                worker_activity
+                    .monitor_api()
+                    .send_worker_activity(worker_activity, &token)
+                    .await
+                    .unwrap_or_else(|e| {
+                        error!("Failed to send worker activity: {}", e);
+                    });
+            }
 
             // Apparently there is no way to make the compiler happy without unwrapping here. But
             // is not an issue since:

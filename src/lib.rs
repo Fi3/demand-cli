@@ -168,8 +168,8 @@ async fn start_static(auth_pub_k: Secp256k1PublicKey, signature: String) {
 }
 
 async fn start_dynamic(auth_pub_k: Secp256k1PublicKey, signature: String) {
-    if Configuration::monitor() {
-        warn!("Monitoring enabled but TOKEN is not set; monitoring will be disabled");
+    if Configuration::monitor() && Configuration::token().is_none() {
+        warn!("Monitoring enabled without TOKEN; share monitoring will use downstream tokens");
     }
     if Configuration::tp_address().is_some() {
         warn!("TP_ADDRESS is set but downstream-token mode does not support JD; disabling JD");
