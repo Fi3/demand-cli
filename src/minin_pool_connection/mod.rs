@@ -71,8 +71,16 @@ pub async fn connect_pool(
             })?;
     info!("SV2 Handshake with Pool at {} completed", address);
     info!("Sending SetupConnection message to Pool at {}", address);
-    let setup_connection_msg =
-        setup_connection_msg.unwrap_or(get_mining_setup_connection_msg(true));
+    let setup_connection_msg = match setup_connection_msg {
+        Some(msg) => msg,
+        None => {
+            let token = Configuration::token().ok_or_else(|| {
+                error!("TOKEN is not set; can not build SetupConnection message");
+                Error::Unrecoverable
+            })?;
+            get_mining_setup_connection_msg(&token, true)
+        }
+    };
     match mining_setup_connection(
         &mut receiver,
         &mut sender,
@@ -212,7 +220,7 @@ pub async fn mining_setup_connection(
     }
 }
 
-pub fn get_mining_setup_connection_msg(work_selection: bool) -> SetupConnection<'static> {
+pub fn get_mining_setup_connection_msg(token: &str, work_selection: bool) -> SetupConnection<'static> {
     let endpoint_host = "0.0.0.0".to_string().into_bytes().try_into().expect("Internal error: this operation can not fail because the string 0.0.0.0 can always be converted into Inner");
     let vendor = String::new().try_into().expect("Internal error: this operation can not fail because an empty string can always be converted into Inner");
     let hardware_version = String::new().try_into().expect("Internal error: this operation can not fail because an empty string can always be converted into Inner");
@@ -221,7 +229,6 @@ pub fn get_mining_setup_connection_msg(work_selection: bool) -> SetupConnection<
         false => 0b0000_0000_0000_0000_0000_0000_0000_0100,
         true => 0b0000_0000_0000_0000_0000_0000_0000_0110,
     };
-    let token = Configuration::token().expect("Checked at initialization");
     let device_id = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
     let device_id = format!("{}::POOLED::{}", device_id, token)
         .to_string()

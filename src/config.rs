@@ -125,7 +125,17 @@ impl Configuration {
     }
 
     pub async fn pool_address() -> Option<Vec<SocketAddr>> {
-        match fetch_pool_urls().await {
+        match fetch_pool_urls(Configuration::token().as_deref()).await {
+            Ok(addresses) => Some(addresses),
+            Err(e) => {
+                error!("Failed to fetch pool addresses: {}", e);
+                None
+            }
+        }
+    }
+
+    pub async fn pool_address_for_token(token: &str) -> Option<Vec<SocketAddr>> {
+        match fetch_pool_urls(Some(token)).await {
             Ok(addresses) => Some(addresses),
             Err(e) => {
                 error!("Failed to fetch pool addresses: {}", e);
@@ -420,7 +430,7 @@ fn parse_address(addr: String) -> Option<SocketAddr> {
 }
 
 /// Fetches pool URLs from the server based on the environment.
-async fn fetch_pool_urls() -> Result<Vec<SocketAddr>, Error> {
+async fn fetch_pool_urls(token: Option<&str>) -> Result<Vec<SocketAddr>, Error> {
     if CONFIG.local {
         info!("Running in local mode, using hardcoded address 127.0.0.1:20000");
         return Ok(vec![
@@ -436,7 +446,13 @@ async fn fetch_pool_urls() -> Result<Vec<SocketAddr>, Error> {
     };
     let endpoint = format!("{}/api/pool/urls", url);
     info!("Fetching pool URLs from: {}", endpoint);
-    let token = Configuration::token().expect("TOKEN is not set");
+    let token = match token {
+        Some(token) => token,
+        None => {
+            error!("TOKEN is not set; can not fetch pool URLs");
+            return Ok(Vec::new());
+        }
+    };
     let mut retries = 8;
     let client = reqwest::Client::new();
 

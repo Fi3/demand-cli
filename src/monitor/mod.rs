@@ -60,7 +60,13 @@ impl MonitorAPI {
 
     /// Sends a batch of shares to the monitoring server.
     async fn send_shares(&self, shares: Vec<ShareInfo>) -> Result<(), Error> {
-        let token = crate::config::Configuration::token().expect("Token is not set");
+        let token = match crate::config::Configuration::token() {
+            Some(token) => token,
+            None => {
+                debug!("TOKEN is not set; skipping share monitoring");
+                return Ok(());
+            }
+        };
 
         debug!("Sending batch of {} shares to API", shares.len());
         let response = self
@@ -81,7 +87,13 @@ impl MonitorAPI {
 
     /// Sends a log to the monitoring server.
     pub async fn send_log(&self, log: ProxyLog) -> Result<(), Error> {
-        let token = crate::config::Configuration::token().expect("Token is not set");
+        let token = match crate::config::Configuration::token() {
+            Some(token) => token,
+            None => {
+                debug!("TOKEN is not set; skipping log monitoring");
+                return Ok(());
+            }
+        };
 
         debug!("Sending log to API: {:?}", log);
         let response = self
@@ -102,7 +114,13 @@ impl MonitorAPI {
 
     /// Sends a worker activity log to the monitoring server.
     pub async fn send_worker_activity(&self, activity: WorkerActivity) -> Result<(), Error> {
-        let token = crate::config::Configuration::token().expect("Token is not set");
+        let token = match crate::config::Configuration::token() {
+            Some(token) => token,
+            None => {
+                debug!("TOKEN is not set; skipping worker activity monitoring");
+                return Ok(());
+            }
+        };
         debug!("Sending worker activity to API: {:?}", activity);
         let response = self
             .client

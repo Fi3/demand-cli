@@ -1,9 +1,7 @@
-use std::{
-    net::{IpAddr, SocketAddr},
-    sync::Arc,
-};
+use std::{net::SocketAddr, sync::Arc};
 
 use crate::{
+    ban,
     config::Configuration,
     shared::{error::Sv1IngressError, utils::AbortOnDrop},
 };
@@ -20,7 +18,7 @@ use tokio_util::codec::{Framed, LinesCodec};
 use tracing::{error, info, warn};
 
 pub fn start_listen_for_downstream(
-    downstreams: Sender<(Sender<String>, Receiver<String>, IpAddr)>,
+    downstreams: Sender<(Sender<String>, Receiver<String>, SocketAddr)>,
 ) -> AbortOnDrop {
     tokio::task::spawn(async move {
         let down_addr: String = Configuration::downstream_listening_addr()
@@ -39,10 +37,14 @@ pub fn start_listen_for_downstream(
         );
         while let Ok((stream, addr)) = downstream_listener.accept().await {
             info!("Try to connect {:#?}", addr);
+            if ban::is_banned(&addr.ip()) {
+                warn!("Rejecting banned downstream {}", addr.ip());
+                continue;
+            }
             Downstream::initialize(
                 stream,
                 crate::MAX_LEN_DOWN_MSG,
-                addr.ip(),
+                addr,
                 downstreams.clone(),
             );
         }
@@ -55,8 +57,8 @@ impl Downstream {
     pub fn initialize(
         stream: TcpStream,
         max_len_for_downstream_messages: u32,
-        address: IpAddr,
-        downstreams: Sender<(Sender<String>, Receiver<String>, IpAddr)>,
+        address: SocketAddr,
+        downstreams: Sender<(Sender<String>, Receiver<String>, SocketAddr)>,
     ) {
         tokio::spawn(async move {
             info!("spawning downstream");

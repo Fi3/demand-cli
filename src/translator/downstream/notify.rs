@@ -32,6 +32,11 @@ pub async fn start_notify(
         upstream_difficulty_config
             .safe_lock(|c| c.channel_nominal_hashrate += Configuration::downstream_hashrate())?;
         stats_sender.setup_stats(connection_id);
+        if let Ok(user_agent) = downstream.safe_lock(|d| d.user_agent.borrow().clone()) {
+            if !user_agent.is_empty() {
+                stats_sender.update_device_name(connection_id, user_agent);
+            }
+        }
         task::spawn(async move {
             let timeout_timer = std::time::Instant::now();
             let mut authorized_in_time = true;
@@ -99,14 +104,15 @@ pub async fn start_notify(
                 while let Ok(mut sv1_mining_notify_msg) = rx_sv1_notify.recv().await {
                     if downstream
                         .safe_lock(|d| {
-                            d.recent_jobs.add_job(&mut sv1_mining_notify_msg,mask.clone());
+                            d.patch_notify_for_downstream(&mut sv1_mining_notify_msg);
+                            d.recent_jobs.add_job(&mut sv1_mining_notify_msg, mask.clone());
                             debug!(
-                                "Downstream {}: Added job_id {} to recent_notifies. Current jobs: {:?}", 
+                                "Downstream {}: Added job_id {} to recent_notifies. Current jobs: {:?}",
                                 connection_id,
                                 sv1_mining_notify_msg.job_id,
                                 d.recent_jobs.current_jobs()
                             );
-                            })
+                        })
                         .is_err()
                     {
                         error!("Translator Downstream Mutex Poisoned");

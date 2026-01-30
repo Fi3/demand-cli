@@ -19,15 +19,18 @@ use tracing::{error, info, warn};
 
 mod api;
 mod auto_update;
+mod ban;
 mod config;
 mod ingress;
 pub mod jd_client;
 mod minin_pool_connection;
 mod monitor;
+mod pending_extranonce;
 mod proxy_state;
 mod router;
 mod share_accounter;
 mod shared;
+mod token_router;
 mod translator;
 
 const TRANSLATOR_BUFFER_SIZE: usize = 32;
@@ -114,7 +117,7 @@ pub async fn start() {
             .init();
     }
 
-    Configuration::token().expect("TOKEN is not set");
+    let token = Configuration::token();
 
     //`self_update` performs synchronous I/O so spawn_blocking is needed
     if Configuration::auto_update() {
@@ -135,7 +138,18 @@ pub async fn start() {
     }
 
     let auth_pub_k: Secp256k1PublicKey = AUTH_PUB_KEY.parse().expect("Invalid public key");
+    let signature = Configuration::signature();
 
+    if token.is_some() {
+        start_static(auth_pub_k, signature).await;
+    } else {
+        start_dynamic(auth_pub_k, signature).await;
+    }
+    info!("exiting");
+    tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+}
+
+async fn start_static(auth_pub_k: Secp256k1PublicKey, signature: String) {
     let pool_addresses = Configuration::pool_address()
         .await
         .filter(|p| !p.is_empty())
@@ -150,15 +164,56 @@ pub async fn start() {
     let mut router = router::Router::new(pool_addresses, auth_pub_k, None, None);
     let epsilon = Duration::from_millis(30_000);
     let best_upstream = router.select_pool_connect().await;
-    initialize_proxy(
-        &mut router,
-        best_upstream,
-        epsilon,
-        Configuration::signature(),
-    )
-    .await;
-    info!("exiting");
-    tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+    initialize_proxy(&mut router, best_upstream, epsilon, signature).await;
+}
+
+async fn start_dynamic(auth_pub_k: Secp256k1PublicKey, signature: String) {
+    if Configuration::monitor() {
+        warn!("Monitoring enabled but TOKEN is not set; monitoring will be disabled");
+    }
+    if Configuration::tp_address().is_some() {
+        warn!("TP_ADDRESS is set but downstream-token mode does not support JD; disabling JD");
+    }
+
+    let stats_sender = api::stats::StatsSender::new();
+    let pool_source = if Configuration::local() {
+        let pool_addresses = Configuration::pool_address()
+            .await
+            .unwrap_or_default();
+        token_router::PoolAddressSource::Static(pool_addresses)
+    } else {
+        token_router::PoolAddressSource::Dynamic
+    };
+
+    let token_router =
+        token_router::TokenRouter::new(pool_source, auth_pub_k, stats_sender.clone(), signature);
+
+    let (downs_sv1_tx, downs_sv1_rx) = channel(10);
+    let sv1_ingress_abortable = ingress::sv1_ingress::start_listen_for_downstream(downs_sv1_tx);
+    let token_router_abortable = token_router.start(downs_sv1_rx);
+
+    let api_router = router::Router::new(Vec::new(), auth_pub_k, None, None);
+    let api_handle = tokio::spawn(api::start(api_router, stats_sender));
+
+    let abort_handles = vec![
+        (sv1_ingress_abortable, "sv1_ingress".to_string()),
+        (token_router_abortable, "token_router".to_string()),
+        (api_handle.into(), "api_server".to_string()),
+    ];
+    monitor_dynamic(abort_handles).await;
+}
+
+async fn monitor_dynamic(abort_handles: Vec<(AbortOnDrop, String)>) {
+    loop {
+        if let Some((_handle, name)) = abort_handles
+            .iter()
+            .find(|(handle, _name)| handle.is_finished())
+        {
+            error!("Task {:?} finished in downstream-token mode", name);
+            return;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
 }
 
 async fn initialize_proxy(

@@ -20,6 +20,7 @@ use tokio::{
 use tracing::{error, info};
 
 use crate::{
+    config::Configuration,
     minin_pool_connection::{self, get_mining_setup_connection_msg, mining_setup_connection},
     shared::utils::AbortOnDrop,
 };
@@ -479,7 +480,18 @@ async fn initialize_mining_connections(
                 return Err(());
             }
         };
-    let setup_connection_msg =
-        setup_connection_msg.unwrap_or(get_mining_setup_connection_msg(true));
+    let setup_connection_msg = match setup_connection_msg {
+        Some(msg) => msg,
+        None => {
+            let token = match Configuration::token() {
+                Some(token) => token,
+                None => {
+                    error!("TOKEN is not set; can not build SetupConnection message");
+                    return Err(());
+                }
+            };
+            get_mining_setup_connection_msg(&token, true)
+        }
+    };
     Ok((receiver, sender, setup_connection_msg))
 }
