@@ -87,6 +87,7 @@ pub struct Upstream {
     pub(super) difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
     pub sender: TSender<Mining<'static>>,
     signature: String,
+    signature_enabled: bool,
     sent_up: u32,
     rejected: u32,
     toa: Vec<std::time::Instant>,
@@ -115,6 +116,7 @@ impl Upstream {
         sender: TSender<Mining<'static>>,
         signature: String,
     ) -> ProxyResult<'static, Arc<Mutex<Self>>> {
+        let signature_enabled = !signature.is_empty();
         Ok(Arc::new(Mutex::new(Self {
             extranonce_prefix: None,
             tx_sv2_set_new_prev_hash,
@@ -129,6 +131,7 @@ impl Upstream {
             difficulty_config,
             sender,
             signature,
+            signature_enabled,
             sent_up: 0,
             rejected: 0,
             toa: Vec::new(),
@@ -434,11 +437,20 @@ impl Upstream {
                             return;
                         }
                     };
+                    let signature_enabled = match self_.safe_lock(|s| s.signature_enabled) {
+                        Ok(enabled) => enabled,
+                        Err(e) => {
+                            error!("Translator upstream mutex corrupted: {e}");
+                            return;
+                        }
+                    };
 
                     sv2_submit.channel_id = channel_id;
-                    let mut extranonce = signature.as_bytes().to_vec();
-                    extranonce.extend_from_slice(&sv2_submit.extranonce.to_vec());
-                    sv2_submit.extranonce = extranonce.try_into().unwrap();
+                    if signature_enabled && !signature.is_empty() {
+                        let mut extranonce = signature.as_bytes().to_vec();
+                        extranonce.extend_from_slice(&sv2_submit.extranonce.to_vec());
+                        sv2_submit.extranonce = extranonce.try_into().unwrap();
+                    }
 
                     let message =
                         roles_logic_sv2::parsers::Mining::SubmitSharesExtended(sv2_submit);
@@ -580,20 +592,23 @@ impl ParseUpstreamMiningMessages<Downstream, NullDownstreamMiningSelector, NoRou
             m.channel_id
         );
         let signature_len = self.signature.len() as u16;
-        if m.extranonce_size < signature_len {
-            error!(
-                "Invalid extranonce size for Channel Id {}: expected at least {} but got {}",
-                m.channel_id, signature_len, m.extranonce_size
-            );
-            return Err(RolesLogicError::InvalidExtranonceSize(
-                signature_len,
+        let can_embed_signature = signature_len > 0
+            && m.extranonce_size >= signature_len + self.min_extranonce_size;
+        if signature_len > 0 && !can_embed_signature {
+            warn!(
+                "Upstream extranonce size {} too small for signature_len {} + min_extranonce_size {}; disabling signature for this connection",
                 m.extranonce_size,
-            ));
+                signature_len,
+                self.min_extranonce_size
+            );
         }
-        let mut prefix = m.extranonce_prefix.to_vec();
-        prefix.extend_from_slice(self.signature.as_bytes());
-        m.extranonce_prefix = prefix.try_into().unwrap();
-        m.extranonce_size -= signature_len;
+        self.signature_enabled = can_embed_signature;
+        if can_embed_signature {
+            let mut prefix = m.extranonce_prefix.to_vec();
+            prefix.extend_from_slice(self.signature.as_bytes());
+            m.extranonce_prefix = prefix.try_into().unwrap();
+            m.extranonce_size -= signature_len;
+        }
         if m.extranonce_size < self.min_extranonce_size {
             error!(
                 "Invalid extranonce size for Channel Id {}: expected at least {} but got {}",
@@ -603,6 +618,26 @@ impl ParseUpstreamMiningMessages<Downstream, NullDownstreamMiningSelector, NoRou
                 self.min_extranonce_size,
                 m.extranonce_size,
             ));
+        }
+        if m.extranonce_size == self.min_extranonce_size {
+            if m.extranonce_size <= 1 {
+                error!(
+                    "Invalid extranonce size for Channel Id {}: need room for proxy extranonce1; got {}",
+                    m.channel_id, m.extranonce_size
+                );
+                return Err(RolesLogicError::InvalidExtranonceSize(
+                    self.min_extranonce_size,
+                    m.extranonce_size,
+                ));
+            }
+            let adjusted = m.extranonce_size - 1;
+            warn!(
+                "Upstream extranonce size {} leaves no room for proxy extranonce1; reducing miner extranonce2 size from {} to {}",
+                m.extranonce_size,
+                self.min_extranonce_size,
+                adjusted
+            );
+            self.min_extranonce_size = adjusted;
         }
         let tproxy_e1_len =
             proxy_extranonce1_len(m.extranonce_size as usize, self.min_extranonce_size.into())
