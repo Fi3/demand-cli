@@ -7,5 +7,7 @@
 !src/**
 !frontend/
 !frontend/**
+!vendor/
+!vendor/**
 !tests/
 !tests/**
