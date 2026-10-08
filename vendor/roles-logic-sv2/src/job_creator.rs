@@ -49,6 +49,20 @@ pub fn tx_outputs_to_costum_scripts(tx_outputs: &[u8]) -> Vec<TxOut> {
     txs
 }
 
+pub fn coinbase_outputs_from_template(
+    template: &NewTemplate,
+    mut pool_outputs: Vec<TxOut>,
+) -> Result<Vec<TxOut>, Error> {
+    pool_outputs
+        .first_mut()
+        .ok_or(Error::EmptyCoinbaseOutputs)?
+        .value = Amount::from_sat(template.coinbase_tx_value_remaining);
+    pool_outputs.extend(tx_outputs_to_costum_scripts(
+        template.coinbase_tx_outputs.as_ref(),
+    ));
+    Ok(pool_outputs)
+}
+
 impl JobsCreators {
     /// Constructor
     pub fn new(extranonce_len: u8) -> Self {
@@ -73,18 +87,11 @@ impl JobsCreators {
         &mut self,
         template: &mut NewTemplate,
         version_rolling_allowed: bool,
-        mut pool_coinbase_outputs: Vec<TxOut>,
+        pool_coinbase_outputs: Vec<TxOut>,
         additional_coinbase_script_data_len: u8,
     ) -> Result<NewExtendedMiningJob<'static>, Error> {
-        let server_tx_outputs = template.coinbase_tx_outputs.to_vec();
-        let mut outputs = tx_outputs_to_costum_scripts(&server_tx_outputs);
-        // A template leaves the pool reward unassigned. A custom job, in contrast,
-        // already contains complete outputs and must retain their values.
-        pool_coinbase_outputs
-            .first_mut()
-            .ok_or(Error::EmptyCoinbaseOutputs)?
-            .value = Amount::from_sat(template.coinbase_tx_value_remaining);
-        pool_coinbase_outputs.append(&mut outputs);
+        let mut pool_coinbase_outputs =
+            coinbase_outputs_from_template(template, pool_coinbase_outputs)?;
 
         // Template IDs span all of u64; Option already represents a missing ID.
         let template_id = template.template_id;

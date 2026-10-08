@@ -3,7 +3,7 @@ mod task_manager;
 use bitcoin::{blockdata::transaction::Transaction, hashes::Hash, Txid};
 use demand_sv2_connection::noise_connection_tokio::Connection;
 use demand_sv2_connection::{HandshakeRole, Initiator, StandardEitherFrame, StandardSv2Frame};
-use roles_logic_sv2::binary_sv2::{Seq0255, Seq064K, B016M, B064K, U256};
+use roles_logic_sv2::binary_sv2::{Seq064K, B016M, B064K, U256};
 use roles_logic_sv2::{
     handlers::SendTo_,
     job_declaration_sv2::{AllocateMiningJobTokenSuccess, SubmitSolutionJd},
@@ -68,7 +68,6 @@ pub struct JobDeclarator {
         u64,
         (
             DeclareMiningJob<'static>,
-            Seq0255<'static, U256<'static>>,
             NewTemplate<'static>,
             // pool's outputs
             Vec<u8>,
@@ -365,7 +364,6 @@ impl JobDeclarator {
                         let mut last_declare_mining_job_sent = last_declare.declare_job;
                         let is_future = last_declare.template.future_template;
                         let id = last_declare.template.template_id;
-                        let merkle_path = last_declare.template.merkle_path.clone();
                         let template = last_declare.template;
                         let downstream_job = last_declare.downstream_job;
 
@@ -379,7 +377,6 @@ impl JobDeclarator {
                                     id,
                                     (
                                         last_declare_mining_job_sent,
-                                        merkle_path,
                                         template,
                                         last_declare.coinbase_pool_output,
                                         downstream_job,
@@ -400,23 +397,15 @@ impl JobDeclarator {
                                         break;
                                     }
                                 };
-                            let mut template_outs = template.coinbase_tx_outputs.to_vec();
-                            let mut pool_outs = last_declare.coinbase_pool_output;
-                            pool_outs.append(&mut template_outs);
+                            let pool_outs = last_declare.coinbase_pool_output;
                             match set_new_prev_hash {
                                 Some(p) => if let Err(e) =  Upstream::set_custom_jobs(
                                     &up,
                                     last_declare_mining_job_sent,
                                     p,
-                                    merkle_path,
                                     new_token,
-                                    template.coinbase_tx_version,
-                                    template.coinbase_prefix,
-                                    template.coinbase_tx_input_sequence,
-                                    template.coinbase_tx_value_remaining,
-                                    pool_outs,
-                                    template.coinbase_tx_locktime,
-                                    template.template_id,
+                                    template,
+                                    &pool_outs,
                                     downstream_job,
                                     ).await {error!("Failed to set custom jobd: {e}"); ProxyState::update_jd_state(JdState::Down);break;},
                                 None => panic!("Invalid state we received a NewTemplate not future, without having received a set new prev hash")
@@ -491,7 +480,7 @@ impl JobDeclarator {
                 error!("{}", Error::JobDeclaratorMutexCorrupted);
                 return;
             };
-            let (job, up, merkle_path, template, mut pool_outs, downstream_job) = loop {
+            let (job, up, template, pool_outs, downstream_job) = loop {
                 match self_mutex.safe_lock(|s| {
                     if s.set_new_prev_hash_counter > 1
                         && s.last_set_new_prev_hash != Some(set_new_prev_hash.clone())
@@ -501,17 +490,10 @@ impl JobDeclarator {
                         Some(None)
                     } else {
                         s.future_jobs.remove(&id).map(
-                            |(job, merkle_path, template, pool_outs, downstream_job)| {
+                            |(job, template, pool_outs, downstream_job)| {
                                 s.future_jobs = HashMap::with_hasher(BuildNoHashHasher::default());
                                 s.set_new_prev_hash_counter -= 1;
-                                Some((
-                                    job,
-                                    s.up.clone(),
-                                    merkle_path,
-                                    template,
-                                    pool_outs,
-                                    downstream_job,
-                                ))
+                                Some((job, s.up.clone(), template, pool_outs, downstream_job))
                             },
                         )
                     }
@@ -534,21 +516,13 @@ impl JobDeclarator {
                 tokio::task::yield_now().await;
             };
             let signed_token = job.mining_job_token.clone();
-            let mut template_outs = template.coinbase_tx_outputs.to_vec();
-            pool_outs.append(&mut template_outs);
             if let Err(e) = Upstream::set_custom_jobs(
                 &up,
                 job,
                 set_new_prev_hash,
-                merkle_path,
                 signed_token,
-                template.coinbase_tx_version,
-                template.coinbase_prefix,
-                template.coinbase_tx_input_sequence,
-                template.coinbase_tx_value_remaining,
-                pool_outs,
-                template.coinbase_tx_locktime,
-                template.template_id,
+                template,
+                &pool_outs,
                 downstream_job,
             )
             .await

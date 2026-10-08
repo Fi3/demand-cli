@@ -4,13 +4,16 @@ use crate::{jd_client::error::Error, jd_client::error::ProxyResult, shared::util
 
 use crate::jd_client::mining_downstream::{DownstreamJob, DownstreamMiningNode as Downstream};
 
-use bitcoin::{consensus::Decodable, Amount, ScriptBuf, TxOut};
-use roles_logic_sv2::binary_sv2::{Seq0255, U256};
+use bitcoin::{
+    consensus::{Decodable, Encodable},
+    Amount, ScriptBuf, TxOut,
+};
 use roles_logic_sv2::{
     channel_logic::channel_factory::PoolChannelFactory,
     common_messages_sv2::Protocol,
     common_properties::{IsMiningUpstream, IsUpstream},
     handlers::mining::{ParseUpstreamMiningMessages, SendTo},
+    job_creator::coinbase_outputs_from_template,
     job_declaration_sv2::DeclareMiningJob,
     mining_sv2::{ExtendedExtranonce, Extranonce, SetCustomMiningJob},
     parsers::Mining,
@@ -207,22 +210,26 @@ impl Upstream {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn set_custom_jobs(
         self_: &Arc<Mutex<Self>>,
         declare_mining_job: DeclareMiningJob<'static>,
         set_new_prev_hash: roles_logic_sv2::template_distribution_sv2::SetNewPrevHash<'static>,
-        merkle_path: Seq0255<'static, U256<'static>>,
         signed_token: roles_logic_sv2::binary_sv2::B0255<'static>,
-        coinbase_tx_version: u32,
-        coinbase_prefix: roles_logic_sv2::binary_sv2::B0255<'static>,
-        coinbase_tx_input_n_sequence: u32,
-        coinbase_tx_value_remaining: u64,
-        coinbase_tx_outs: Vec<u8>,
-        coinbase_tx_locktime: u32,
-        template_id: u64,
+        template: NewTemplate<'static>,
+        pool_outputs: &[u8],
         downstream_job: DownstreamJob,
     ) -> ProxyResult<()> {
+        let outputs = coinbase_outputs_from_template(
+            &template,
+            Downstream::decode_pool_coinbase_outputs(pool_outputs)?,
+        )?;
+        let mut coinbase_tx_outputs = Vec::new();
+        for output in outputs {
+            output
+                .consensus_encode(&mut coinbase_tx_outputs)
+                .map_err(|_| Error::Unrecoverable)?;
+        }
+        let coinbase_tx_outputs = coinbase_tx_outputs.try_into()?;
         info!("Sending set custom mining job");
         let send_lock = self_
             .safe_lock(|state| state.custom_job_send_lock.clone())
@@ -249,13 +256,13 @@ impl Upstream {
             prev_hash: set_new_prev_hash.prev_hash,
             min_ntime: set_new_prev_hash.header_timestamp,
             nbits: set_new_prev_hash.n_bits,
-            coinbase_tx_version,
-            coinbase_prefix,
-            coinbase_tx_input_n_sequence,
-            coinbase_tx_value_remaining,
-            coinbase_tx_outputs: coinbase_tx_outs.try_into().expect("Internal error: this operation can not fail because Vec<U8> can always be converted into Inner"),
-            coinbase_tx_locktime,
-            merkle_path,
+            coinbase_tx_version: template.coinbase_tx_version,
+            coinbase_prefix: template.coinbase_prefix,
+            coinbase_tx_input_n_sequence: template.coinbase_tx_input_sequence,
+            coinbase_tx_value_remaining: 0,
+            coinbase_tx_outputs,
+            coinbase_tx_locktime: template.coinbase_tx_locktime,
+            merkle_path: template.merkle_path,
             extranonce_size: 0,
         };
         let message = Mining::SetCustomMiningJob(to_send);
@@ -264,7 +271,7 @@ impl Upstream {
                 s.template_to_job_id.register_request(
                     request_id,
                     PendingCustomJob {
-                        template_id,
+                        template_id: template.template_id,
                         downstream_job,
                     },
                 )
@@ -798,6 +805,103 @@ mod tests {
             local_job_id,
             coinbase_tx_prefix: Vec::new().try_into().expect("empty prefix"),
             coinbase_tx_suffix: Vec::new().try_into().expect("empty suffix"),
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_job_wire_preserves_the_declared_coinbase_reward() {
+        use roles_logic_sv2::{
+            binary_sv2,
+            job_creator::{extended_job_from_custom_job, JobsCreators},
+            template_distribution_sv2::SetNewPrevHash,
+        };
+
+        for future_template in [false, true] {
+            for reward in [0, 3_125_000_000] {
+                let pool_outputs = vec![
+                    TxOut {
+                        value: Amount::ZERO,
+                        script_pubkey: ScriptBuf::from_bytes(vec![0x51]),
+                    },
+                    TxOut {
+                        value: Amount::from_sat(17),
+                        script_pubkey: ScriptBuf::from_bytes(vec![0x52]),
+                    },
+                ];
+                let mut template = template_with_outputs(&[difficulty_commitment(42.0)]);
+                template.future_template = future_template;
+                template.version = 0x20000000;
+                template.coinbase_prefix = vec![2, 1, 1, 0].try_into().unwrap();
+                template.coinbase_tx_value_remaining = reward;
+                template.coinbase_tx_input_sequence = 0xfffffffe;
+                template.coinbase_tx_locktime = 10;
+                let miner_job = JobsCreators::new(32)
+                    .on_new_template(&mut template, true, pool_outputs.clone(), 0)
+                    .unwrap();
+                let declared_job = DeclareMiningJob {
+                    request_id: 1,
+                    mining_job_token: vec![1].try_into().unwrap(),
+                    version: template.version,
+                    coinbase_prefix: miner_job.coinbase_tx_prefix.clone(),
+                    coinbase_suffix: miner_job.coinbase_tx_suffix.clone(),
+                    tx_list: Vec::new().into(),
+                    excess_data: Vec::new().try_into().unwrap(),
+                };
+                let prev_hash = SetNewPrevHash {
+                    template_id: template.template_id,
+                    prev_hash: [0; 32].into(),
+                    header_timestamp: 123,
+                    n_bits: 0x207fffff,
+                    target: [0xff; 32].into(),
+                };
+                let encoded_outputs = pool_outputs
+                    .iter()
+                    .flat_map(bitcoin::consensus::serialize)
+                    .collect::<Vec<_>>();
+                let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+                let upstream = Upstream::new(0, sender).await.unwrap();
+                upstream
+                    .safe_lock(|state| state.channel_id = Some(7))
+                    .unwrap();
+                Upstream::set_custom_jobs(
+                    &upstream,
+                    declared_job.clone(),
+                    prev_hash,
+                    vec![2].try_into().unwrap(),
+                    template,
+                    &encoded_outputs,
+                    DownstreamJob {
+                        local_job_id: miner_job.job_id,
+                        coinbase_tx_prefix: miner_job.coinbase_tx_prefix.clone(),
+                        coinbase_tx_suffix: miner_job.coinbase_tx_suffix.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+                let Mining::SetCustomMiningJob(custom_job) = receiver.recv().await.unwrap() else {
+                    panic!("expected a custom job");
+                };
+                let mut bytes = binary_sv2::to_bytes(custom_job).unwrap();
+                let decoded: SetCustomMiningJob = binary_sv2::from_bytes(&mut bytes).unwrap();
+                let pool_job = extended_job_from_custom_job(&decoded, 0, 32).unwrap();
+                assert_eq!(pool_job.coinbase_tx_prefix, declared_job.coinbase_prefix);
+                assert_eq!(
+                    pool_job.coinbase_tx_suffix, declared_job.coinbase_suffix,
+                    "the pool must reconstruct the coinbase declared and sent to miners"
+                );
+                let coinbase: bitcoin::Transaction = bitcoin::consensus::deserialize(
+                    &[
+                        pool_job.coinbase_tx_prefix.as_ref(),
+                        &[0; 32],
+                        pool_job.coinbase_tx_suffix.as_ref(),
+                    ]
+                    .concat(),
+                )
+                .unwrap();
+                assert_eq!(coinbase.output[0].value.to_sat(), reward);
+                assert_eq!(coinbase.output[1], pool_outputs[1]);
+                assert_eq!(coinbase.output[2], difficulty_commitment(42.0));
+            }
         }
     }
 

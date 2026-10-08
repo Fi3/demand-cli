@@ -398,6 +398,10 @@ API. It generates code for `binary_sv2` 7.0.0 and adds no old protocol library.
 The migration retains mining, Job Declaration, share accounting, and RSK merge
 mining. The compatibility layer uses the new wire format. This includes the
 coinbase signature operation limit and the extended channel group identifier.
+Custom jobs carry the reward in the serialized coinbase outputs. The client and
+the miner job creator use the same calculation. It assigns the template reward
+to the first pool output and then adds the template outputs. This rule applies
+to current and future jobs.
 Transport queues retain their limit of 10 messages. Received frame data stays in
 the buffer pool until the consumer releases it.
 
