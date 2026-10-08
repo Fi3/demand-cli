@@ -19,6 +19,12 @@ docker run --rm --init --network none --platform linux/amd64 \
 
 If the build fails, these commands stop before a container starts.
 
+The same test files support master and `NewSRI`. The build selects the older
+transport API when `Cargo.toml` declares a direct `codec_sv2` dependency. Otherwise,
+the tests use the connection library's public API. The test assertions stay the
+same. Keep `build.rs` and its TOML build dependency when you prepare either version
+for a benchmark. Freeze the test files and `build.rs` before an agent starts work.
+
 The image contains both supplied binaries, the compiled proxy, and the compiled mining
 test executable. Building needs network access for public Cargo dependencies and Debian
 packages; running needs no downloads or external network. The default entry point runs
