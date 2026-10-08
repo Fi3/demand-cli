@@ -9,13 +9,15 @@ external binary paths, or Bitcoin node are required.
 Build and run from the repository root:
 
 ```bash
-docker build --platform linux/amd64 -f tests/Dockerfile -t dmnd-mining-tests .
-mkdir -p target/mining-e2e
+docker build --platform linux/amd64 -f tests/Dockerfile -t dmnd-mining-tests . &&
+mkdir -p target/mining-e2e &&
 docker run --rm --init --network none --platform linux/amd64 \
   --user "$(id -u):$(id -g)" \
   --mount "type=bind,src=$(pwd)/target/mining-e2e,dst=/artifacts" \
   dmnd-mining-tests
 ```
+
+If the build fails, these commands stop before a container starts.
 
 The image contains both supplied binaries, the compiled proxy, and the compiled mining
 test executable. Building needs network access for public Cargo dependencies and Debian
