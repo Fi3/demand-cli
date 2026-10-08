@@ -3,9 +3,9 @@ mod task_manager;
 
 use std::net::SocketAddr;
 
-use codec_sv2::{HandshakeRole, StandardEitherFrame, StandardSv2Frame};
 use demand_share_accounting_ext::parser::PoolExtMessages;
 use demand_sv2_connection::noise_connection_tokio::Connection;
+use demand_sv2_connection::{HandshakeRole, StandardEitherFrame, StandardSv2Frame};
 use errors::Error;
 use key_utils::Secp256k1PublicKey;
 use noise_sv2::Initiator;

@@ -1,9 +1,9 @@
 pub mod message_handler;
 mod task_manager;
-use binary_sv2::{Seq0255, Seq064K, B016M, B064K, U256};
 use bitcoin::{blockdata::transaction::Transaction, hashes::Hash, Txid};
-use codec_sv2::{HandshakeRole, Initiator, StandardEitherFrame, StandardSv2Frame};
 use demand_sv2_connection::noise_connection_tokio::Connection;
+use demand_sv2_connection::{HandshakeRole, Initiator, StandardEitherFrame, StandardSv2Frame};
+use roles_logic_sv2::binary_sv2::{Seq0255, Seq064K, B016M, B064K, U256};
 use roles_logic_sv2::{
     handlers::SendTo_,
     job_declaration_sv2::{AllocateMiningJobTokenSuccess, SubmitSolutionJd},

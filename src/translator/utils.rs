@@ -11,7 +11,6 @@ use crate::{
     share_log_enabled,
     translator::error::Error,
 };
-use binary_sv2::Sv2DataType;
 use bitcoin::{
     block::{Header, Version},
     hashes::{sha256d, Hash as BHash},
@@ -69,7 +68,7 @@ fn reserve_share_slot(
 fn maybe_request_upstream_rate_limit_retarget(
     downstream: &Arc<Mutex<Downstream>>,
     now: tokio::time::Instant,
-) -> crate::translator::error::ProxyResult<'static, ()> {
+) -> crate::translator::error::ProxyResult<()> {
     let should_update = LAST_UPSTREAM_RATE_LIMIT_RETARGET
         .safe_lock(|last_update| {
             let should_update = last_update.is_none_or(|last_update| {
@@ -149,7 +148,7 @@ pub async fn check_share_rate_limit(downstream: Arc<Mutex<Downstream>>) {
 }
 
 /// Reserves one upstream-share slot in the rolling rate-limit window.
-pub fn allow_submit_share() -> crate::translator::error::ProxyResult<'static, bool> {
+pub fn allow_submit_share() -> crate::translator::error::ProxyResult<bool> {
     if Configuration::difficulty_updates_disabled() {
         return Ok(true);
     }
@@ -173,8 +172,8 @@ pub fn allow_submit_share() -> crate::translator::error::ProxyResult<'static, bo
 }
 
 pub fn validate_share(
-    request: &client_to_server::Submit<'static>,
-    job: &Notify<'static>,
+    request: &client_to_server::Submit,
+    job: &Notify,
     difficulty: f32,
     extranonce1: &[u8],
     version_rolling_mask: Option<sv1_api::utils::HexU32Be>,
@@ -187,7 +186,7 @@ pub fn validate_share(
     }
 
     let prev_hash_vec: Vec<u8> = job.prev_hash.clone().into();
-    let prev_hash = match binary_sv2::U256::from_vec_(prev_hash_vec) {
+    let prev_hash = match roles_logic_sv2::binary_sv2::U256::try_from(prev_hash_vec) {
         Ok(hash) => hash,
         Err(e) => {
             error!("Share rejected: Invalid previous hash: {:?}", e);
@@ -196,7 +195,7 @@ pub fn validate_share(
     };
     let mut merkle_branch = Vec::new();
     for branch in &job.merkle_branch {
-        merkle_branch.push(branch.0.to_vec());
+        merkle_branch.push(branch.0.to_owned_bytes());
     }
 
     let mut extranonce = Vec::new();

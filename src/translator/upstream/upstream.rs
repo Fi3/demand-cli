@@ -3,7 +3,7 @@ use super::super::{
     error::{Error, ProxyResult},
     upstream::diff_management::UpstreamDifficultyConfig,
 };
-use binary_sv2::U256;
+use roles_logic_sv2::binary_sv2::U256;
 use roles_logic_sv2::{
     common_messages_sv2::Protocol,
     common_properties::{IsMiningUpstream, IsUpstream},
@@ -110,7 +110,7 @@ impl Upstream {
         target: Arc<Mutex<Vec<u8>>>,
         difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
         sender: TSender<Mining<'static>>,
-    ) -> ProxyResult<'static, Arc<Mutex<Self>>> {
+    ) -> ProxyResult<Arc<Mutex<Self>>> {
         Ok(Arc::new(Mutex::new(Self {
             extranonce_prefix: None,
             tx_bridge_work,
@@ -137,7 +137,7 @@ impl Upstream {
         rx_sv2_submit_shares_ext: TReceiver<UpstreamSubmitShare>,
         rx_update_token: TReceiver<String>,
         diff_update_rx: watch::Receiver<u64>,
-    ) -> Result<AbortOnDrop, Error<'static>> {
+    ) -> Result<AbortOnDrop, Error> {
         let task_manager = TaskManager::initialize();
         let abortable = task_manager
             .safe_lock(|t| t.get_aborter())
@@ -170,7 +170,7 @@ impl Upstream {
     }
 
     /// Setups the connection with the SV2 Upstream role (most typically a SV2 Pool).
-    async fn connect(self_: Arc<Mutex<Self>>) -> ProxyResult<'static, ()> {
+    async fn connect(self_: Arc<Mutex<Self>>) -> ProxyResult<()> {
         let sender = self_
             .safe_lock(|s| s.sender.clone())
             .map_err(|_e| Error::TranslatorUpstreamMutexPoisoned)?;
@@ -202,7 +202,7 @@ impl Upstream {
     fn handle_token_updates(
         self_: Arc<Mutex<Self>>,
         mut rx_update_token: TReceiver<String>,
-    ) -> ProxyResult<'static, AbortOnDrop> {
+    ) -> ProxyResult<AbortOnDrop> {
         let handle = tokio::task::spawn(async move {
             while let Some(new_token) = rx_update_token.recv().await {
                 let sender = match self_.safe_lock(|s| s.sender.clone()) {
@@ -270,7 +270,7 @@ impl Upstream {
         self_: Arc<Mutex<Self>>,
         mut receiver: TReceiver<Mining<'static>>,
         diff_update_rx: watch::Receiver<u64>,
-    ) -> ProxyResult<'static, (AbortOnDrop, AbortOnDrop)> {
+    ) -> ProxyResult<(AbortOnDrop, AbortOnDrop)> {
         let clone = self_.clone();
         let (tx_frame, tx_sv2_extranonce, tx_bridge_work) = clone
             .safe_lock(|s| {
@@ -549,7 +549,7 @@ impl Upstream {
     fn handle_submit(
         self_: Arc<Mutex<Self>>,
         mut rx_submit: TReceiver<UpstreamSubmitShare>,
-    ) -> ProxyResult<'static, AbortOnDrop> {
+    ) -> ProxyResult<AbortOnDrop> {
         let tx_frame = self_
             .safe_lock(|s| s.sender.clone())
             .map_err(|_| Error::TranslatorUpstreamMutexPoisoned)?;
@@ -977,7 +977,11 @@ mod tests {
         roles_logic_sv2::mining_sv2::NewExtendedMiningJob {
             channel_id: 1,
             job_id,
-            min_ntime: binary_sv2::Sv2Option::new(if future { None } else { Some(1_700_000_000) }),
+            min_ntime: roles_logic_sv2::binary_sv2::Sv2Option::new(if future {
+                None
+            } else {
+                Some(1_700_000_000)
+            }),
             version: 0,
             version_rolling_allowed: false,
             merkle_path: vec![].into(),

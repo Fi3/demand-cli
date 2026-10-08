@@ -38,7 +38,7 @@ impl UpstreamDifficultyConfig {
 }
 
 use super::super::error::ProxyResult;
-use binary_sv2::u256_from_int;
+use roles_logic_sv2::binary_sv2::u256_from_int;
 use roles_logic_sv2::{mining_sv2::UpdateChannel, parsers::Mining, utils::Mutex};
 use std::{sync::Arc, time::Duration};
 use tracing::error;
@@ -73,7 +73,7 @@ impl UpstreamRetargetRateLimiter {
 
 impl Upstream {
     /// Emit an `UpdateChannel` using the current aggregate nominal hashrate.
-    pub(super) async fn try_update_hashrate(self_: Arc<Mutex<Self>>) -> ProxyResult<'static, ()> {
+    pub(super) async fn try_update_hashrate(self_: Arc<Mutex<Self>>) -> ProxyResult<()> {
         let (channel_id_option, diff_mgmt, tx_message) = self_
             .safe_lock(|u| (u.channel_id, u.difficulty_config.clone(), u.sender.clone()))
             .map_err(|_e| Error::TranslatorDiffConfigMutexPoisoned)?;

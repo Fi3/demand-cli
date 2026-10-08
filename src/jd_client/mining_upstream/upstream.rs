@@ -4,8 +4,8 @@ use crate::{jd_client::error::Error, jd_client::error::ProxyResult, shared::util
 
 use crate::jd_client::mining_downstream::{DownstreamJob, DownstreamMiningNode as Downstream};
 
-use binary_sv2::{Seq0255, U256};
 use bitcoin::{consensus::Decodable, Amount, ScriptBuf, TxOut};
+use roles_logic_sv2::binary_sv2::{Seq0255, U256};
 use roles_logic_sv2::{
     channel_logic::channel_factory::PoolChannelFactory,
     common_messages_sv2::Protocol,
@@ -213,9 +213,9 @@ impl Upstream {
         declare_mining_job: DeclareMiningJob<'static>,
         set_new_prev_hash: roles_logic_sv2::template_distribution_sv2::SetNewPrevHash<'static>,
         merkle_path: Seq0255<'static, U256<'static>>,
-        signed_token: binary_sv2::B0255<'static>,
+        signed_token: roles_logic_sv2::binary_sv2::B0255<'static>,
         coinbase_tx_version: u32,
-        coinbase_prefix: binary_sv2::B0255<'static>,
+        coinbase_prefix: roles_logic_sv2::binary_sv2::B0255<'static>,
         coinbase_tx_input_n_sequence: u32,
         coinbase_tx_value_remaining: u64,
         coinbase_tx_outs: Vec<u8>,

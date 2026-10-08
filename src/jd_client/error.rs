@@ -10,11 +10,11 @@ pub enum Error {
     /// Errors on bad CLI argument input.
     BadCliArgs,
     /// Errors from `binary_sv2` crate.
-    BinarySv2(binary_sv2::Error),
+    BinarySv2(roles_logic_sv2::binary_sv2::Error),
     /// Errors on bad noise handshake.
-    CodecNoise(codec_sv2::noise_sv2::Error),
+    CodecNoise(noise_sv2::Error),
     /// Errors from `framing_sv2` crate.
-    FramingSv2(framing_sv2::Error),
+    FramingSv2(roles_logic_sv2::framing_sv2::Error),
     /// Errors on bad `TcpStream` connection.
     Io(std::io::Error),
     /// Errors on bad `String` to `int` conversion.
@@ -106,20 +106,20 @@ impl fmt::Display for Error {
     }
 }
 
-impl From<binary_sv2::Error> for Error {
-    fn from(e: binary_sv2::Error) -> Self {
+impl From<roles_logic_sv2::binary_sv2::Error> for Error {
+    fn from(e: roles_logic_sv2::binary_sv2::Error) -> Self {
         Error::BinarySv2(e)
     }
 }
 
-impl From<codec_sv2::noise_sv2::Error> for Error {
-    fn from(e: codec_sv2::noise_sv2::Error) -> Self {
+impl From<noise_sv2::Error> for Error {
+    fn from(e: noise_sv2::Error) -> Self {
         Error::CodecNoise(e)
     }
 }
 
-impl From<framing_sv2::Error> for Error {
-    fn from(e: framing_sv2::Error) -> Self {
+impl From<roles_logic_sv2::framing_sv2::Error> for Error {
+    fn from(e: roles_logic_sv2::framing_sv2::Error) -> Self {
         Error::FramingSv2(e)
     }
 }

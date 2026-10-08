@@ -9,6 +9,9 @@ possible. (tooling, how to execute things, any file that should never be changed
 
 Always reuse the stile and the conventions used by the files that you are changing.
 
+Vendor source revisions and check commands are in README.md. Keep original source
+import commits before dependency changes. Do not commit generated vendor Cargo.lock files.
+
 ## Protected control tests
 
 The user uses `tests/**` to evaluate agent changes. These rules take precedence over

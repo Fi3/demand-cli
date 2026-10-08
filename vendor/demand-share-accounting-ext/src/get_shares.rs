@@ -1,29 +1,24 @@
-#[cfg(not(feature = "with_serde"))]
 use alloc::vec::Vec;
-#[cfg(not(feature = "with_serde"))]
 use binary_sv2::binary_codec_sv2::{
-    self, decodable::DecodableField, decodable::FieldMarker, encodable::EncodableField, Decodable,
-    Error,
+    decodable::DecodableField, decodable::FieldMarker, encodable::EncodableField, Decodable, Error,
 };
 use binary_sv2::GetSize;
-use binary_sv2::{Deserialize, Seq064K, Serialize};
-#[cfg(not(feature = "with_serde"))]
+use binary_sv2::Seq064K;
 use core::convert::TryInto;
+use roles_logic_sv2::binary_sv2;
 
 use crate::Share;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(derive_codec_sv2::Encodable, derive_codec_sv2::Decodable, Clone, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct GetShares<'decoder> {
     pub request_id: u32,
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     pub shares: Seq064K<'decoder, u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct GetSharesSuccess<'decoder> {
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     pub shares: Seq064K<'decoder, Share<'decoder>>,
 }
 impl<'decoder> From<GetSharesSuccess<'decoder>> for EncodableField<'decoder> {
@@ -74,18 +69,5 @@ impl GetSharesSuccess<'_> {
 impl GetSharesSuccess<'_> {
     pub fn as_static(&self) -> GetSharesSuccess<'static> {
         self.clone().into_static()
-    }
-}
-
-#[cfg(feature = "with_serde")]
-impl<'d> GetSize for GetShares<'d> {
-    fn get_size(&self) -> usize {
-        self.shares.get_size() + self.request_id.get_size()
-    }
-}
-#[cfg(feature = "with_serde")]
-impl<'d> GetSize for GetSharesSuccess<'d> {
-    fn get_size(&self) -> usize {
-        self.shares.get_size()
     }
 }

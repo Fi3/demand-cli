@@ -12,6 +12,7 @@ mod accept_connection;
 mod notify;
 mod receive_from_downstream;
 mod send_to_downstream;
+mod sv1;
 mod task_manager;
 
 /// This constant is used as a check to ensure clients
@@ -37,7 +38,7 @@ pub type SubmitShareResultSender = oneshot::Sender<SubmitShareResult>;
 #[derive(Debug)]
 pub struct SubmitShareWithChannelId {
     pub channel_id: u32,
-    pub share: Submit<'static>,
+    pub share: Submit,
     // TODO why we need allow dead code here???
     #[allow(dead_code)]
     extranonce: Vec<u8>,
@@ -63,4 +64,13 @@ pub struct SetDownstreamTarget {
 
 pub fn new_subscription_id() -> String {
     "ae6812eb4cd7735a302a8a9dd95cf71f".into()
+}
+
+fn submit_response(request: Submit, accepted: bool) -> sv1_api::json_rpc::Message {
+    sv1_api::json_rpc::Response {
+        id: request.id,
+        result: serde_json::Value::Bool(accepted),
+        error: None,
+    }
+    .into()
 }

@@ -18,14 +18,14 @@ pub fn create_notify(
     new_job: NewExtendedMiningJob<'static>,
     clean_jobs: bool,
     extranonce_len: usize,
-) -> server_to_client::Notify<'static> {
+) -> server_to_client::Notify {
     let new_job = extended_job_to_non_segwit(new_job, extranonce_len)
         .expect("failed to convert extended job to non segwit");
     // Make sure that SetNewPrevHash + NewExtendedMiningJob is matching (not future)
     let job_id = new_job.job_id.to_string();
 
     // U256<'static> -> MerkleLeaf
-    let prev_hash = PrevHash(new_prev_hash.prev_hash.clone());
+    let prev_hash = PrevHash(new_prev_hash.prev_hash.clone().into());
 
     // B064K<'static'> -> HexBytes
     let coin_base1 = new_job.coinbase_tx_prefix.to_vec().into();
@@ -33,7 +33,10 @@ pub fn create_notify(
 
     // Seq0255<'static, U56<'static>> -> Vec<Vec<u8>>
     let merkle_path = new_job.merkle_path.clone().into_static().0;
-    let merkle_branch: Vec<MerkleNode> = merkle_path.into_iter().map(MerkleNode).collect();
+    let merkle_branch: Vec<MerkleNode> = merkle_path
+        .into_iter()
+        .map(|node| MerkleNode(node.into()))
+        .collect();
 
     // u32 -> HexBytes
     let version = HexU32Be(new_job.version);
@@ -55,7 +58,7 @@ pub fn create_notify(
         clean_jobs,
     };
     // Todo find a nice way to print prev_hash, cb1,cb2  as hex
-    let mut dbg_prev_hash = notify_response.prev_hash.0.to_vec();
+    let mut dbg_prev_hash = notify_response.prev_hash.0.to_owned_bytes();
     dbg_prev_hash.reverse();
     info!(
         "NextMiningNotify created for channel id: {:?}, Job id: {:?}, PrevHash: {:?} version: {:?}, bits: {:?}, time: {:?}, clean_jobs: {}",

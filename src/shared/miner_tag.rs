@@ -1,6 +1,6 @@
 use std::convert::TryInto;
 
-use binary_sv2::B0255;
+use roles_logic_sv2::binary_sv2::B0255;
 use roles_logic_sv2::template_distribution_sv2::NewTemplate;
 
 // DO NOT CHANGE IT WTHOUT TESTING CAN BREACK EVERYTHING
@@ -92,7 +92,7 @@ pub fn tag_new_template<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use binary_sv2::{Seq0255, B064K, U256};
+    use roles_logic_sv2::binary_sv2::{Seq0255, B064K, U256};
 
     #[test]
     fn formats_empty_miner_name_tag() {

@@ -142,7 +142,7 @@ pub struct Downstream {
     pub last_call_to_update_hr: u128,
     pub(super) stats_sender: StatsSender,
     pub recent_jobs: RecentJobs,
-    pub first_job: Notify<'static>,
+    pub first_job: Notify,
     pub(super) first_job_merge_mining_binding_id: Option<u64>,
     pub share_monitor: SharesMonitor,
     pub user_agent: std::cell::RefCell<String>, // RefCell is used here because `handle_subscribe` and `handle_authorize` take &self not &mut self and we need to mutate user_agent
@@ -352,7 +352,7 @@ impl Downstream {
         downstreams: Receiver<crate::DownstreamConnection>,
         stats_sender: StatsSender,
         tx_update_token: Sender<String>,
-    ) -> Result<AbortOnDrop, Error<'static>> {
+    ) -> Result<AbortOnDrop, Error> {
         let task_manager = TaskManager::initialize();
         let abortable = task_manager
             .safe_lock(|t| t.get_aborter())
@@ -383,7 +383,7 @@ impl Downstream {
     pub(super) async fn handle_incoming_sv1(
         self_: Arc<Mutex<Self>>,
         message_sv1: json_rpc::Message,
-    ) -> Result<(), super::super::error::Error<'static>> {
+    ) -> Result<(), super::super::error::Error> {
         let connection_id = self_.safe_lock(|s| s.connection_id)?;
         match &message_sv1 {
             json_rpc::Message::StandardRequest(request) => {
@@ -442,8 +442,10 @@ impl Downstream {
         // `handle_message` in `IsServer` trait + calls `handle_request`
         // TODO: Map err from V1Error to Error::V1Error
 
-        let response =
-            self_.safe_lock(|s| s.handle_message(message_sv1.clone()).map_err(Box::new))?;
+        let response = self_.safe_lock(|s| {
+            s.handle_message(None, message_sv1.clone())
+                .map_err(Box::new)
+        })?;
         match response {
             Ok(res) => {
                 if let Some(r) = res {
@@ -469,10 +471,6 @@ impl Downstream {
                 }
             }
             Err(e) => {
-                if matches!(e.as_ref(), sv1_api::error::Error::InvalidSubmission) {
-                    Self::reject_invalid_submit(self_, &message_sv1).await?;
-                    return Ok(());
-                }
                 error!("{e}");
                 Err(Error::V1Protocol(e))
             }
@@ -626,7 +624,7 @@ impl Downstream {
     async fn reject_invalid_submit(
         self_: Arc<Mutex<Self>>,
         message_sv1: &json_rpc::Message,
-    ) -> Result<(), Error<'static>> {
+    ) -> Result<(), Error> {
         if let Some(response) = Self::invalid_submit_rejection(message_sv1) {
             let invalid_share = Self::invalid_submit_share(message_sv1);
             let (connection_id, reason, share_monitor) = self_.safe_lock(|s| {
@@ -695,8 +693,8 @@ impl Downstream {
 
     async fn handle_submit_request(
         self_: Arc<Mutex<Self>>,
-        request: client_to_server::Submit<'static>,
-    ) -> Result<(), Error<'static>> {
+        request: client_to_server::Submit,
+    ) -> Result<(), Error> {
         if share_log_enabled() {
             info!(
                 "Handling mining.submit request {} from {} with job_id {}, nonce: {:?}",
@@ -723,7 +721,7 @@ impl Downstream {
                     s.share_monitor.insert_share(share);
                     s.stats_sender.update_rejected_shares(s.connection_id);
                 })?;
-                Self::send_message_downstream(self_, request.respond(false).into()).await;
+                Self::send_message_downstream(self_, super::submit_response(request, false)).await;
                 return Ok(());
             }
         };
@@ -759,7 +757,7 @@ impl Downstream {
                     "Share rejected: can not find job with id {}",
                     request.job_id
                 );
-                Self::send_message_downstream(self_, request.respond(false).into()).await;
+                Self::send_message_downstream(self_, super::submit_response(request, false)).await;
                 return Ok(());
             }
         };
@@ -806,7 +804,7 @@ impl Downstream {
                 s.stats_sender.update_rejected_shares(s.connection_id);
             })?;
             error!("Share rejected: Invalid share for stored job");
-            Self::send_message_downstream(self_, request.respond(false).into()).await;
+            Self::send_message_downstream(self_, super::submit_response(request, false)).await;
             return Ok(());
         }
 
@@ -826,7 +824,7 @@ impl Downstream {
                     request.job_id.clone(),
                 ));
                 self_.safe_lock(|s| s.submit_counts_for_diff.set(true))?;
-                Self::send_message_downstream(self_, request.respond(true).into()).await;
+                Self::send_message_downstream(self_, super::submit_response(request, true)).await;
             }
             Err(e) => {
                 error!("Failed to forward downstream submit: {e}");
@@ -841,7 +839,7 @@ impl Downstream {
                     s.share_monitor.insert_share(share);
                     s.stats_sender.update_rejected_shares(s.connection_id);
                 })?;
-                Self::send_message_downstream(self_, request.respond(false).into()).await;
+                Self::send_message_downstream(self_, super::submit_response(request, false)).await;
             }
         }
 
@@ -918,8 +916,8 @@ impl Downstream {
 
     async fn forward_submit_share(
         self_: &Arc<Mutex<Self>>,
-        request: client_to_server::Submit<'static>,
-    ) -> Result<SubmitShareResultReceiver, Error<'static>> {
+        request: client_to_server::Submit,
+    ) -> Result<SubmitShareResultReceiver, Error> {
         let (channel_id, extranonce, extranonce2_len, version_rolling_mask, sender) = self_
             .safe_lock(|s| {
                 (
@@ -962,7 +960,7 @@ impl Downstream {
         difficulty_mgmt: DownstreamDifficultyConfig,
         upstream_difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
         stats_sender: StatsSender,
-        first_job: Notify<'static>,
+        first_job: Notify,
         tx_update_token: Sender<String>,
     ) -> Self {
         use crate::monitor::shares::SharesMonitor;
@@ -1023,11 +1021,11 @@ impl Downstream {
     }
 }
 
-/// Implements `IsServer` for `Downstream` to handle the SV1 messages.
-impl IsServer<'static> for Downstream {
+/// Handles the SV1 connection state for the server interface.
+impl Downstream {
     /// Handle the incoming `mining.configure` message which is received after a Downstream role is
     /// subscribed and authorized. Contains the version rolling mask parameters.
-    fn handle_configure(
+    pub(super) fn handle_configure(
         &mut self,
         request: &client_to_server::Configure,
     ) -> (Option<server_to_client::VersionRollingParams>, Option<bool>) {
@@ -1048,20 +1046,20 @@ impl IsServer<'static> for Downstream {
 
         (
             Some(server_to_client::VersionRollingParams::new(
-                    version_rolling_mask,version_rolling_min_bit_count
-            ).expect("Version mask invalid, automatic version mask selection not supported, please change it in carte::downstream_sv1::mod.rs")),
+                version_rolling_mask,
+                version_rolling_min_bit_count,
+            )),
             Some(false),
         )
-    }
-
-    fn handle_suggest_difficulty(&mut self, _: &sv1_api::client_to_server::SuggestDifficulty) {
-        println!("Received Suggest Diff");
     }
 
     /// Handle the response to a `mining.subscribe` message received from the client.
     /// The subscription messages are erroneous and just used to conform the SV1 protocol spec.
     /// Because no one unsubscribed in practice, they just unplug their machine.
-    fn handle_subscribe(&self, request: &client_to_server::Subscribe) -> Vec<(String, String)> {
+    pub(super) fn handle_subscribe(
+        &self,
+        request: &client_to_server::Subscribe,
+    ) -> Vec<(String, String)> {
         info!(
             "dmnd-client-debug handle_subscribe connection_id={} agent={} extranonce1_len={} extranonce2_len={} first_job_id={}",
             self.connection_id,
@@ -1088,7 +1086,7 @@ impl IsServer<'static> for Downstream {
         vec![set_difficulty_sub, notify_sub]
     }
 
-    fn handle_authorize(&self, request: &client_to_server::Authorize) -> bool {
+    pub(super) fn handle_authorize(&self, request: &client_to_server::Authorize) -> bool {
         if self.authorized_names.is_empty() {
             if self.updates_upstream_token {
                 let new_token = request.password.clone();
@@ -1136,68 +1134,51 @@ impl IsServer<'static> for Downstream {
         }
     }
 
-    /// When miner find the job which meets requested difficulty, it can submit share to the server.
-    /// Only [Submit](client_to_server::Submit) requests for authorized user names can be submitted.
-    fn handle_submit(&self, _request: &client_to_server::Submit<'static>) -> bool {
-        error!("Downstream::handle_submit should not be called directly");
-        false
-    }
-
-    /// Indicates to the server that the client supports the mining.set_extranonce method.
-    fn handle_extranonce_subscribe(&self) {}
-
     /// Checks if a Downstream role is authorized.
-    fn is_authorized(&self, name: &str) -> bool {
+    pub(super) fn is_authorized(&self, name: &str) -> bool {
         self.authorized_names.contains(&name.to_string())
     }
 
     /// Authorizes a Downstream role.
-    fn authorize(&mut self, name: &str) {
+    pub(super) fn authorize(&mut self, name: &str) {
         self.authorized_names.push(name.to_string());
     }
 
     /// Sets the `extranonce1` field sent in the SV1 `mining.notify` message to the value specified
     /// by the SV2 `OpenExtendedMiningChannelSuccess` message sent from the Upstream role.
-    fn set_extranonce1(
-        &mut self,
-        _extranonce1: Option<Extranonce<'static>>,
-    ) -> Extranonce<'static> {
+    pub(super) fn set_extranonce1(&mut self, _extranonce1: Option<Extranonce>) -> Extranonce {
         self.extranonce1.clone().try_into().expect("Internal error: this opration can not fail because the Vec<U8> can always be converted into Extranonce")
     }
 
     /// Returns the `Downstream`'s `extranonce1` value.
-    fn extranonce1(&self) -> Extranonce<'static> {
+    pub(super) fn extranonce1(&self) -> Extranonce {
         self.extranonce1.clone().try_into().expect("Internal error: this opration can not fail because the Vec<U8> can always be converted into Extranonce")
     }
 
     /// Sets the `extranonce2_size` field sent in the SV1 `mining.notify` message to the value
     /// specified by the SV2 `OpenExtendedMiningChannelSuccess` message sent from the Upstream role.
-    fn set_extranonce2_size(&mut self, _extra_nonce2_size: Option<usize>) -> usize {
+    pub(super) fn set_extranonce2_size(&mut self, _extra_nonce2_size: Option<usize>) -> usize {
         self.extranonce2_len
     }
 
     /// Returns the `Downstream`'s `extranonce2_size` value.
-    fn extranonce2_size(&self) -> usize {
+    pub(super) fn extranonce2_size(&self) -> usize {
         self.extranonce2_len
     }
 
     /// Returns the version rolling mask.
-    fn version_rolling_mask(&self) -> Option<HexU32Be> {
+    pub(super) fn version_rolling_mask(&self) -> Option<HexU32Be> {
         self.version_rolling_mask.clone()
     }
 
     /// Sets the version rolling mask.
-    fn set_version_rolling_mask(&mut self, mask: Option<HexU32Be>) {
+    pub(super) fn set_version_rolling_mask(&mut self, mask: Option<HexU32Be>) {
         self.version_rolling_mask = mask;
     }
 
     /// Sets the minimum version rolling bit.
-    fn set_version_rolling_min_bit(&mut self, mask: Option<HexU32Be>) {
+    pub(super) fn set_version_rolling_min_bit(&mut self, mask: Option<HexU32Be>) {
         self.version_rolling_min_bit = mask
-    }
-
-    fn notify(&'_ mut self) -> Result<json_rpc::Message, sv1_api::error::Error<'_>> {
-        unreachable!()
     }
 }
 
@@ -1215,14 +1196,14 @@ const TRACKED_RECENT_JOBS: usize = 3;
 
 #[derive(Debug, Clone)]
 pub(crate) struct IssuedJob {
-    pub notify: Notify<'static>,
+    pub notify: Notify,
     pub difficulty: f32,
     merge_mining_binding_id: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
 struct RawJob {
-    notify: Notify<'static>,
+    notify: Notify,
     merge_mining_binding_id: Option<u64>,
 }
 
@@ -1235,7 +1216,7 @@ pub struct RecentJobs {
     last_v2s: CircularBuffer<u32, TRACKED_RECENT_JOBS>,
     tracked_jobs: usize,
 }
-fn apply_mask(mask: Option<HexU32Be>, message: &mut server_to_client::Notify<'static>) {
+fn apply_mask(mask: Option<HexU32Be>, message: &mut server_to_client::Notify) {
     if let Some(mask) = mask {
         message.version = HexU32Be(message.version.0 & !mask.0);
     }
@@ -1244,7 +1225,7 @@ fn apply_mask(mask: Option<HexU32Be>, message: &mut server_to_client::Notify<'st
 impl RecentJobs {
     pub(crate) fn add_job_with_binding(
         &mut self,
-        notify: &mut Notify<'static>,
+        notify: &mut Notify,
         mask: Option<HexU32Be>,
         difficulty: f32,
         candidate_binding_id: Option<u64>,
@@ -1264,7 +1245,7 @@ impl RecentJobs {
         };
     }
 
-    pub(crate) fn clone_last(&mut self, difficulty: f32) -> Option<Notify<'static>> {
+    pub(crate) fn clone_last(&mut self, difficulty: f32) -> Option<Notify> {
         if let Some(job) = self.jobs.back() {
             let mut notify = job.notify.clone();
             let v2_id = notify.job_id.parse::<u32>().unwrap();
@@ -1281,7 +1262,7 @@ impl RecentJobs {
         }
     }
 
-    pub(crate) fn current_jobs(&self) -> VecDeque<Notify<'static>> {
+    pub(crate) fn current_jobs(&self) -> VecDeque<Notify> {
         self.jobs.iter().map(|job| job.notify.clone()).collect()
     }
 
@@ -1292,7 +1273,7 @@ impl RecentJobs {
     fn new_v1(
         &mut self,
         v2_id: u32,
-        notify: Notify<'static>,
+        notify: Notify,
         difficulty: f32,
         merge_mining_binding_id: Option<u64>,
     ) -> u32 {
@@ -1405,7 +1386,7 @@ mod tests {
 
     static TEST_TOKEN_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-    fn first_job(job_id: &str) -> Notify<'static> {
+    fn first_job(job_id: &str) -> Notify {
         Notify {
             job_id: job_id.to_string(),
             prev_hash: PrevHash::try_from("0".repeat(64).as_str()).unwrap(),
@@ -1677,7 +1658,7 @@ mod tests {
         downstream: Arc<Mutex<Downstream>>,
         rx_outgoing: &mut Receiver<json_rpc::Message>,
         stats_sender: &StatsSender,
-        submit: client_to_server::Submit<'static>,
+        submit: client_to_server::Submit,
         expected_rejected_shares: u64,
     ) {
         let submit_id = submit.id;

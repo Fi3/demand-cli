@@ -4,9 +4,9 @@ use std::{
 };
 
 use crate::jd_client::job_declarator::{setup_connection::SetupConnectionHandler, JobDeclarator};
-use codec_sv2::{buffer_sv2::Slice, HandshakeRole};
 use demand_share_accounting_ext::parser::PoolExtMessages;
 use demand_sv2_connection::noise_connection_tokio::Connection;
+use demand_sv2_connection::HandshakeRole;
 use key_utils::Secp256k1PublicKey;
 use noise_sv2::Initiator;
 use roles_logic_sv2::{common_messages_sv2::SetupConnection, parsers::Mining};
@@ -446,7 +446,7 @@ fn open_channel() -> Mining<'static> {
     roles_logic_sv2::parsers::Mining::OpenExtendedMiningChannel(
         roles_logic_sv2::mining_sv2::OpenExtendedMiningChannel {
             request_id: 0,
-            max_target: binary_sv2::u256_from_int(u64::MAX),
+            max_target: roles_logic_sv2::binary_sv2::u256_from_int(u64::MAX),
             min_extranonce_size: 8,
             user_identity: "ABC"
                 .to_string()
@@ -464,8 +464,8 @@ async fn initialize_mining_connections(
     authority_public_key: Secp256k1PublicKey,
 ) -> Result<
     (
-        Receiver<codec_sv2::Frame<PoolExtMessages<'static>, Slice>>,
-        Sender<codec_sv2::Frame<PoolExtMessages<'static>, Slice>>,
+        Receiver<demand_sv2_connection::StandardEitherFrame<PoolExtMessages<'static>>>,
+        Sender<demand_sv2_connection::StandardEitherFrame<PoolExtMessages<'static>>>,
         SetupConnection<'static>,
     ),
     (),

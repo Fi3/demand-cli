@@ -34,7 +34,7 @@ use task_manager::TaskManager;
 
 #[derive(Debug, Clone)]
 pub(crate) struct MiningNotify {
-    pub(crate) notify: server_to_client::Notify<'static>,
+    pub(crate) notify: server_to_client::Notify,
     pub(crate) merge_mining_binding_id: Option<u64>,
 }
 
@@ -55,7 +55,7 @@ pub async fn start(
         Option<Address>,
     )>,
     stats_sender: crate::api::stats::StatsSender,
-) -> Result<AbortOnDrop, Error<'static>> {
+) -> Result<AbortOnDrop, Error> {
     let task_manager = TaskManager::initialize(pool_connection.clone());
     let abortable = task_manager
         .safe_lock(|t| t.get_aborter())

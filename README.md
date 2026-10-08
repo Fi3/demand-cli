@@ -370,3 +370,70 @@ Happy mining!
     cargo build --release
 
 The binary is produced at `./target/release/dmnd-client` — use it exactly as shown in Section 4.1.
+
+### SRI dependencies
+
+SRI means Stratum Reference Implementation. The client uses
+[`dmnd-pool/new-sri`](https://github.com/dmnd-pool/new-sri) at revision
+`4f4fcb1d9b035ced1a77cdc020be028f2dca084f`.
+This revision uses the protocol libraries from SRI v1.12.0.
+The Stratum V1 server uses `sv1_api` 6.0.0.
+
+A vendor copy is a local copy of dependency source code. The client needs these
+three copies:
+
+| Dependency | Original source revision | Reason for the local copy |
+|---|---|---|
+| `roles_logic_sv2` | `dmnd-pool/new-sri`, `4f4fcb1d9b035ced1a77cdc020be028f2dca084f` | Calculate message sizes without copies. Use one encoding field buffer and avoid decoding field lists for shares. |
+| `demand-sv2-connection` | `demand-open-source/demand-sv2-connection`, `edeb677c9e2aa07de99f6b7a9ce5b627ff0e1899` | Use the new encrypted transport API with a separate state for each connection. |
+| `demand-share-accounting-ext` | `demand-open-source/share-accounting-ext`, `c661e936264cd8cc6b13b51fc06a79e04a6ae76e` | Encode share accounting messages with the new binary library. |
+
+The import commits contain the original source code. Later commits contain the
+changes. Preserve this order when you update a vendor copy.
+The protocol, frame, encryption, and buffer libraries come from the Rust package
+registry. These libraries do not need local changes.
+The share accounting derive macro stays at version 1.1.3 to retain its conversion
+API. It generates code for `binary_sv2` 7.0.0 and adds no old protocol library.
+
+The migration retains mining, Job Declaration, share accounting, and RSK merge
+mining. The compatibility layer uses the new wire format. This includes the
+coinbase signature operation limit and the extended channel group identifier.
+Transport queues retain their limit of 10 messages. Received frame data stays in
+the buffer pool until the consumer releases it.
+
+Run checks with explicit library and binary targets:
+
+```sh
+rustfmt --edition 2021 src/lib.rs src/main.rs
+cargo clippy --lib --bin dmnd-client --all-features -- -D warnings
+cargo test --lib --bin dmnd-client --all-features --locked
+cargo test --manifest-path vendor/roles-logic-sv2/Cargo.toml --lib --all-features
+cargo build --release --lib --bin dmnd-client --locked
+```
+
+The unit tests cover message encoding, share accounting, encrypted connections,
+large transaction messages, authority validation, and connection cleanup.
+They also check the allocation limits for mining job encoding and size calculation.
+Do not use checks that process the protected control tests. See [AGENTS.md](AGENTS.md).
+
+### Migration performance checks
+
+The comparison uses the old SRI revision `f97870c9a38c01ad5a7ac087bc0fd3d04ec56616`
+and the new library with the local changes. Both builds use release optimization,
+link-time optimization, and the production `jemalloc` allocator.
+Allocation counts are measured separately from execution time.
+Each time is the median of nine runs with 100,000 operations per run.
+`ns` means nanosecond.
+
+| Operation | Old time, ns | New time, ns | Old allocations | New allocations |
+|---|---:|---:|---:|---:|
+| Encode mining job | 483 | 354 | 23 | 18 |
+| Decode mining job | 1,171 | 725 | 55 | 43 |
+| Encode share | 109 | 64 | 5 | 3 |
+| Decode share | 307 | 22 | 20 | 2 |
+
+The job has 12 merkle nodes and 600 coinbase bytes. The share has 28 extranonce
+bytes. Encoding includes the input copy. Decoding includes the input byte copy
+and conversion to an owned message. Size calculation needs no allocations.
+These checks measure message processing. They do not measure live pool mining
+or network throughput.

@@ -2,11 +2,11 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum Error {
-    BinarySv2(binary_sv2::Error),
+    BinarySv2(roles_logic_sv2::binary_sv2::Error),
     /// Errors on bad noise handshake.
     SV2Connection(demand_sv2_connection::Error),
     /// Errors from `framing_sv2` crate.
-    FramingSv2(framing_sv2::Error),
+    FramingSv2(roles_logic_sv2::framing_sv2::Error),
     /// Errors on bad `TcpStream` connection.
     Io(std::io::Error),
     /// Errors on bad `String` to `int` conversion.
@@ -40,8 +40,8 @@ impl fmt::Display for Error {
     }
 }
 
-impl From<binary_sv2::Error> for Error {
-    fn from(e: binary_sv2::Error) -> Self {
+impl From<roles_logic_sv2::binary_sv2::Error> for Error {
+    fn from(e: roles_logic_sv2::binary_sv2::Error) -> Self {
         Error::BinarySv2(e)
     }
 }
@@ -52,8 +52,8 @@ impl From<demand_sv2_connection::Error> for Error {
     }
 }
 
-impl From<framing_sv2::Error> for Error {
-    fn from(e: framing_sv2::Error) -> Self {
+impl From<roles_logic_sv2::framing_sv2::Error> for Error {
+    fn from(e: roles_logic_sv2::framing_sv2::Error) -> Self {
         Error::FramingSv2(e)
     }
 }

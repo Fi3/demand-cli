@@ -10,20 +10,8 @@ repository = "https://github.com/stratum-mining/stratum"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 tracing = { version = "0.1" }
-futures = "0.3.28"
-#binary_sv2 = { version = "1.2.0"}
-#codec_sv2 = { version = "1.2.1", features=["noise_sv2""] }
-#const_sv2 = {version = "2.0.0"}
-
-#binary_sv2 = { path = "../stratum/protocols/v2/binary-sv2"}
-#codec_sv2 = { path = "../stratum/protocols/v2/codec-sv2", features = ["noise_sv2"]}
-#const_sv2 = { path = "../stratum/protocols/v2/const-sv2"}
-
-binary_sv2 = { git = "https://github.com/demand-open-source/stratum",subdirectory = "protocols/v2/binary_sv2" }
-const_sv2 = { git = "https://github.com/demand-open-source/stratum",subdirectory = "protocols/v2/const_sv2" }
-codec_sv2 = { git = "https://github.com/demand-open-source/stratum",subdirectory = "protocols/v2/codec_sv2",features = ["noise_sv2"] }
-
-
-
-#[features]
-#with_serde = ["binary_sv2/with_serde", "codec_sv2/with_serde"]
+buffer_sv2 = "=3.0.1"
+binary_sv2 = "=7.0.0"
+codec_sv2 = { version = "=7.0.0", features = ["noise_sv2", "with_buffer_pool"] }
+noise_sv2 = "=2.0.0"
+roles_logic_sv2 = { git = "https://github.com/dmnd-pool/new-sri", rev = "4f4fcb1d9b035ced1a77cdc020be028f2dca084f" }

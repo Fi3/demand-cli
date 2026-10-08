@@ -11,8 +11,23 @@ use router::Router;
 use tokio::sync::watch;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
 #[cfg(all(not(target_os = "windows"), feature = "jemalloc"))]
+#[cfg(not(test))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
+
+#[cfg(test)]
+mod sri;
+#[cfg(test)]
+mod test_allocator;
+
+#[cfg(all(test, not(target_os = "windows"), feature = "jemalloc"))]
+#[global_allocator]
+static GLOBAL: test_allocator::TestAllocator<Jemalloc> = test_allocator::TestAllocator(Jemalloc);
+
+#[cfg(all(test, any(target_os = "windows", not(feature = "jemalloc"))))]
+#[global_allocator]
+static GLOBAL: test_allocator::TestAllocator<std::alloc::System> =
+    test_allocator::TestAllocator(std::alloc::System);
 
 use crate::auto_update::check_update_proxy;
 use crate::shared::utils::AbortOnDrop;

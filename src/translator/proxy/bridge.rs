@@ -80,7 +80,7 @@ pub struct Bridge {
 }
 
 impl Bridge {
-    pub async fn ready(self_: &'_ Arc<Mutex<Self>>) -> Result<(), Error<'_>> {
+    pub async fn ready(self_: &'_ Arc<Mutex<Self>>) -> Result<(), Error> {
         let started_at = std::time::Instant::now();
         let mut last_log_at = started_at;
         while self_
@@ -111,7 +111,7 @@ impl Bridge {
         extranonces: ExtendedExtranonce,
         target: Arc<Mutex<Vec<u8>>>,
         channel_id: u32,
-    ) -> Result<Arc<Mutex<Self>>, Error<'static>> {
+    ) -> Result<Arc<Mutex<Self>>, Error> {
         info!("Creating new bridge for channel_id {}:", channel_id);
         let ids = Arc::new(Mutex::new(GroupId::new()));
         let upstream_target: [u8; 32] =  target.safe_lock(|t| {
@@ -138,10 +138,7 @@ impl Bridge {
     }
 
     #[allow(clippy::result_large_err)]
-    pub fn on_new_sv1_connection(
-        &mut self,
-        hash_rate: f32,
-    ) -> ProxyResult<'static, OpenSv1Downstream> {
+    pub fn on_new_sv1_connection(&mut self, hash_rate: f32) -> ProxyResult<OpenSv1Downstream> {
         info!(
             "dmnd-client-debug open_sv1_downstream_start hash_rate={} last_notify_present={}",
             hash_rate,
@@ -194,7 +191,7 @@ impl Bridge {
         self_: Arc<Mutex<Self>>,
         rx_bridge_work: tokio::sync::mpsc::Receiver<BridgeWork>,
         rx_sv1_downstream: tokio::sync::mpsc::Receiver<DownstreamMessages>,
-    ) -> Result<AbortOnDrop, Error<'static>> {
+    ) -> Result<AbortOnDrop, Error> {
         let task_manager = TaskManager::initialize();
         let abortable = task_manager
             .safe_lock(|t| t.get_aborter())
@@ -258,7 +255,7 @@ impl Bridge {
     fn handle_update_downstream_target(
         self_: Arc<Mutex<Self>>,
         new_target: SetDownstreamTarget,
-    ) -> ProxyResult<'static, ()> {
+    ) -> ProxyResult<()> {
         self_
             .safe_lock(|b| {
                 b.channel_factory
@@ -280,7 +277,7 @@ impl Bridge {
     async fn handle_submit_shares(
         self_: Arc<Mutex<Self>>,
         share: SubmitShareWithChannelId,
-    ) -> ProxyResult<'static, ()> {
+    ) -> ProxyResult<()> {
         let SubmitShareWithChannelId {
             channel_id,
             share,
@@ -470,7 +467,7 @@ impl Bridge {
         channel_id: u32,
         sv1_submit: Submit,
         version_rolling_mask: Option<HexU32Be>,
-    ) -> ProxyResult<'static, SubmitSharesExtended<'static>> {
+    ) -> ProxyResult<SubmitSharesExtended<'static>> {
         if share_log_enabled() {
             info!(
                 "Bridge translating mining.submit {} from downstream with channel {} and job {}",
@@ -501,7 +498,7 @@ impl Bridge {
                     &sv1_submit.version_bits, &version_rolling_mask
                 );
                 return Err(Error::V1Protocol(Box::new(
-                    sv1_api::error::Error::InvalidSubmission,
+                    sv1_api::error::Error::UnexpectedMessage("Invalid share version".to_string()),
                 )));
             }
         };
@@ -528,7 +525,7 @@ impl Bridge {
         self_: Arc<Mutex<Self>>,
         sv2_set_new_prev_hash: SetNewPrevHash<'static>,
         tx_sv1_notify: broadcast::Sender<MiningNotify>,
-    ) -> Result<(), Error<'static>> {
+    ) -> Result<(), Error> {
         self_
             .safe_lock(|s| s.last_p_hash = Some(sv2_set_new_prev_hash.clone()))
             .map_err(|_| Error::BridgeMutexPoisoned)?;
@@ -599,7 +596,7 @@ impl Bridge {
         sv2_new_extended_mining_job: NewExtendedMiningJob<'static>,
         tx_sv1_notify: broadcast::Sender<MiningNotify>,
         merge_mining_binding_id: Option<u64>,
-    ) -> Result<(), Error<'static>> {
+    ) -> Result<(), Error> {
         // convert to non segwit jobs so we dont have to depend if miner's support segwit or not
         self_
             .safe_lock(|s| {
@@ -675,7 +672,7 @@ impl Bridge {
     fn handle_upstream_work(
         self_: Arc<Mutex<Self>>,
         mut receiver: tokio::sync::mpsc::Receiver<BridgeWork>,
-    ) -> Result<JoinHandle<()>, Error<'static>> {
+    ) -> Result<JoinHandle<()>, Error> {
         let tx_sv1_notify = self_
             .safe_lock(|s| s.tx_sv1_notify.clone())
             .map_err(|_| Error::BridgeMutexPoisoned)?;
@@ -777,7 +774,7 @@ mod test {
             Ok(b)
         }
 
-        pub fn create_sv1_submit(job_id: u32) -> Submit<'static> {
+        pub fn create_sv1_submit(job_id: u32) -> Submit {
             Submit {
                 user_name: "test_user".to_string(),
                 job_id: job_id.to_string(),
@@ -794,7 +791,7 @@ mod test {
             extranonce2_len: usize,
             ntime: u32,
             nonce: u32,
-        ) -> Submit<'static> {
+        ) -> Submit {
             Submit {
                 user_name: "test_user".to_string(),
                 job_id: job_id.to_string(),
@@ -830,7 +827,7 @@ mod test {
         NewExtendedMiningJob {
             channel_id: 1,
             job_id,
-            min_ntime: binary_sv2::Sv2Option::new(Some(TEST_NTIME)),
+            min_ntime: roles_logic_sv2::binary_sv2::Sv2Option::new(Some(TEST_NTIME)),
             version: 0,
             version_rolling_allowed: false,
             merkle_path: vec![].into(),
@@ -987,7 +984,7 @@ mod test {
                 let new_mining_job = NewExtendedMiningJob {
                     channel_id,
                     job_id: 0,
-                    min_ntime: binary_sv2::Sv2Option::new(Some(now)),
+                    min_ntime: roles_logic_sv2::binary_sv2::Sv2Option::new(Some(now)),
                     version: 0b0000_0000_0000_0000,
                     version_rolling_allowed: false,
                     merkle_path: vec![].into(),

@@ -1,23 +1,10 @@
-#[cfg(not(feature = "with_serde"))]
 use alloc::vec::Vec;
-#[cfg(not(feature = "with_serde"))]
-use binary_sv2::binary_codec_sv2;
-#[cfg(feature = "with_serde")]
-use binary_sv2::GetSize;
-use binary_sv2::{Deserialize, Seq064K, Serialize, B016M};
-#[cfg(not(feature = "with_serde"))]
+use binary_sv2::{Seq064K, B016M};
 use core::convert::TryInto;
+use roles_logic_sv2::binary_sv2;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(derive_codec_sv2::Encodable, derive_codec_sv2::Decodable, Clone, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct NewTxs<'decoder> {
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     pub transactions: Seq064K<'decoder, B016M<'decoder>>,
-}
-
-#[cfg(feature = "with_serde")]
-impl<'d> GetSize for NewTxs<'d> {
-    fn get_size(&self) -> usize {
-        self.transactions.get_size()
-    }
 }

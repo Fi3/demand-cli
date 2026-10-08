@@ -1,20 +1,15 @@
 use binary_sv2::{
-    decodable::FieldMarker,
-    encodable::{EncodableField, EncodablePrimitive},
-    Error, Fixed, GetMarker, Seq064K, Sv2DataType,
+    decodable::FieldMarker, encodable::EncodableField, Error, Fixed, GetMarker, GetSize, Seq064K,
+    Sv2DataType,
 };
+use roles_logic_sv2::binary_sv2;
 
 use super::Hash256;
 use alloc::vec::Vec;
-#[cfg(not(feature = "with_serde"))]
-use binary_sv2::binary_codec_sv2;
-#[cfg(feature = "with_serde")]
-use binary_sv2::GetSize;
-use binary_sv2::{Deserialize, Serialize, U256};
-#[cfg(not(feature = "with_serde"))]
+use binary_sv2::U256;
 use core::convert::TryInto;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(derive_codec_sv2::Encodable, derive_codec_sv2::Decodable, Clone, Debug, PartialEq, Eq)]
 #[already_sized]
 #[repr(C)]
 pub struct Slice {
@@ -33,19 +28,7 @@ pub struct Slice {
 
 impl<'a> Slice {
     pub fn seq_into_encodable_field(v: Seq064K<'a, Slice>) -> EncodableField<'a> {
-        let inner = v.into_inner();
-        let inner_len = inner.len() as u16;
-        let mut as_encodable: Vec<EncodableField> = Vec::with_capacity((inner_len + 2) as usize);
-        as_encodable.push(EncodableField::Primitive(EncodablePrimitive::OwnedU8(
-            inner_len.to_le_bytes()[0],
-        )));
-        as_encodable.push(EncodableField::Primitive(EncodablePrimitive::OwnedU8(
-            inner_len.to_le_bytes()[1],
-        )));
-        for element in inner {
-            as_encodable.push(element.into());
-        }
-        EncodableField::Struct(as_encodable)
+        v.into()
     }
 }
 
@@ -74,55 +57,12 @@ impl GetMarker for Slice {
 }
 
 impl<'d> Sv2DataType<'d> for Slice {
-    fn from_bytes_unchecked(data: &'d mut [u8]) -> Self {
-        debug_assert!(data.len() == 60);
-        let number_of_shares = u32::from_bytes_unchecked(&mut data[0..4]);
-        let difficulty = u64::from_bytes_unchecked(&mut data[4..12]);
-        let fees = u64::from_bytes_unchecked(&mut data[12..20]);
-        let root_1 = u64::from_bytes_unchecked(&mut data[20..28]);
-        let root_2 = u64::from_bytes_unchecked(&mut data[28..36]);
-        let root_3 = u64::from_bytes_unchecked(&mut data[36..44]);
-        let root_4 = u64::from_bytes_unchecked(&mut data[44..52]);
-        let root = Hash256 {
-            first: root_1,
-            second: root_2,
-            third: root_3,
-            forth: root_4,
-        };
-        let job_id = u64::from_bytes_unchecked(&mut data[52..60]);
-        Self {
-            number_of_shares,
-            difficulty,
-            fees,
-            root,
-            job_id,
-        }
+    fn from_bytes_(data: &'d mut [u8]) -> Result<Self, Error> {
+        binary_sv2::from_bytes(data)
     }
 
-    fn from_vec_(mut data: Vec<u8>) -> Result<Self, Error> {
-        Self::from_bytes_(&mut data)
-    }
-
-    fn from_vec_unchecked(mut data: Vec<u8>) -> Self {
-        Self::from_bytes_unchecked(&mut data)
-    }
-
-    fn to_slice_unchecked(&'d self, dst: &mut [u8]) {
-        debug_assert!(dst.len() == 60);
-        self.number_of_shares.to_slice_unchecked(&mut dst[0..4]);
-        self.difficulty.to_slice_unchecked(&mut dst[4..12]);
-        self.fees.to_slice_unchecked(&mut dst[12..20]);
-        self.root.first.to_slice_unchecked(&mut dst[20..52]);
-        self.root.second.to_slice_unchecked(&mut dst[20..52]);
-        self.root.third.to_slice_unchecked(&mut dst[20..52]);
-        self.root.forth.to_slice_unchecked(&mut dst[20..52]);
-        self.job_id.to_slice_unchecked(&mut dst[52..60]);
-    }
-}
-
-#[cfg(feature = "with_serde")]
-impl GetSize for Slice {
-    fn get_size(&self) -> usize {
-        60
+    fn to_slice(&'d self, dst: &mut [u8]) -> Result<usize, Error> {
+        binary_sv2::to_writer(self.clone(), dst)?;
+        Ok(self.get_size())
     }
 }

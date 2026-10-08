@@ -1476,8 +1476,8 @@ fn constant_time_eq(expected: &[u8], supplied: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use binary_sv2::{Seq0255, B0255, B064K, U256};
     use bitcoin::{absolute::LockTime, transaction, OutPoint, Sequence, TxIn, Witness};
+    use roles_logic_sv2::binary_sv2::{Seq0255, B0255, B064K, U256};
     use std::time::Duration;
 
     const PAYLOAD_HEX: &str =

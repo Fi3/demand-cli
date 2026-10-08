@@ -8,8 +8,8 @@ use crate::{
 
 use super::{error::Error, job_declarator::JobDeclarator};
 use bitcoin::{consensus::Encodable, TxOut};
-use codec_sv2::{HandshakeRole, Initiator, StandardEitherFrame, StandardSv2Frame};
 use demand_sv2_connection::noise_connection_tokio::Connection;
+use demand_sv2_connection::{HandshakeRole, Initiator, StandardEitherFrame, StandardSv2Frame};
 use key_utils::Secp256k1PublicKey;
 use roles_logic_sv2::{
     handlers::{template_distribution::ParseServerTemplateDistributionMessages, SendTo_},
@@ -848,8 +848,8 @@ impl TemplateRx {
 mod tests {
     use super::*;
     use crate::jd_client::{IS_CUSTOM_JOB_SET, IS_NEW_PHASH_ARRIVED, IS_NEW_TEMPLATE_HANDLED};
-    use binary_sv2::{Seq0255, Seq064K, B016M, B0255, B064K, U256};
     use bitcoin::consensus::Encodable;
+    use roles_logic_sv2::binary_sv2::{Seq0255, Seq064K, B016M, B0255, B064K, U256};
     use roles_logic_sv2::template_distribution_sv2::RequestTransactionDataSuccess;
     use std::convert::TryInto;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -960,7 +960,7 @@ mod tests {
         frame
             .serialize(&mut buf)
             .expect("failed to serialize sv2 frame");
-        let payload = &mut buf[framing_sv2::header::Header::SIZE..];
+        let payload = &mut buf[roles_logic_sv2::framing_sv2::header::Header::SIZE..];
         let message =
             PoolMessages::try_from((message_type, payload)).expect("failed to parse sv2 payload");
         f(message)

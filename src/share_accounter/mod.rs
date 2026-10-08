@@ -5,10 +5,10 @@ use errors::Error;
 use std::sync::Arc;
 use tracing::error;
 
-use binary_sv2::GetSize;
 use dashmap::DashMap;
 use demand_share_accounting_ext::*;
 use parser::{PoolExtMessages, ShareAccountingMessages};
+use roles_logic_sv2::binary_sv2::GetSize;
 use roles_logic_sv2::{mining_sv2::SubmitSharesSuccess, parsers::Mining};
 use task_manager::TaskManager;
 

@@ -1,13 +1,11 @@
-#[cfg(not(feature = "with_serde"))]
 use binary_sv2::{decodable::DecodableField, decodable::FieldMarker, encodable::EncodableField};
-
-#[cfg(feature = "with_serde")]
-use binary_sv2::Serialize;
+use roles_logic_sv2::binary_sv2;
+use roles_logic_sv2::framing_sv2;
 
 use binary_sv2::GetSize;
 
 use binary_sv2::{from_bytes, Deserialize};
-use roles_logic_sv2::parsers::{CommonMessageTypes, JobDeclarationTypes, MiningTypes};
+use roles_logic_sv2::parsers::PoolMessages;
 use roles_logic_sv2::parsers::{
     CommonMessages, IsSv2Message, JobDeclaration, Mining, MiningDeviceMessages,
     TemplateDistribution,
@@ -26,23 +24,15 @@ use crate::share_ok::ShareOk;
 use crate::r#const::*;
 
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "with_serde", derive(Serialize, Deserialize))]
 pub enum ShareAccountingMessages<'a> {
     ShareOk(ShareOk),
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     NewBlockFound(NewBlockFound<'a>),
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     GetWindow(GetWindow<'a>),
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     GetWindowSuccess(GetWindowSuccess<'a>),
     GetWindowBusy(GetWindowBusy),
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     GetShares(GetShares<'a>),
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     GetSharesSuccess(GetSharesSuccess<'a>),
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     NewTxs(NewTxs<'a>),
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     ErrorMessage(ErrorMessage<'a>),
 }
 
@@ -76,7 +66,6 @@ impl IsSv2Message for ShareAccountingMessages<'_> {
     }
 }
 
-#[cfg(not(feature = "with_serde"))]
 impl<'decoder> From<ShareAccountingMessages<'decoder>> for EncodableField<'decoder> {
     fn from(m: ShareAccountingMessages<'decoder>) -> Self {
         match m {
@@ -108,7 +97,6 @@ impl GetSize for ShareAccountingMessages<'_> {
     }
 }
 
-#[cfg(not(feature = "with_serde"))]
 impl<'decoder> Deserialize<'decoder> for ShareAccountingMessages<'decoder> {
     fn get_structure(_v: &[u8]) -> std::result::Result<Vec<FieldMarker>, binary_sv2::Error> {
         unimplemented!()
@@ -120,7 +108,6 @@ impl<'decoder> Deserialize<'decoder> for ShareAccountingMessages<'decoder> {
     }
 }
 
-#[cfg(not(feature = "with_serde"))]
 impl<'decoder> Deserialize<'decoder> for PoolExtMessages<'decoder> {
     fn get_structure(_v: &[u8]) -> std::result::Result<Vec<FieldMarker>, binary_sv2::Error> {
         unimplemented!()
@@ -213,17 +200,11 @@ impl<'a> TryFrom<(u8, &'a mut [u8])> for ShareAccountingMessages<'a> {
 }
 
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "with_serde", derive(Serialize, Deserialize))]
 pub enum PoolExtMessages<'a> {
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     Common(CommonMessages<'a>),
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     Mining(Mining<'a>),
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     JobDeclaration(JobDeclaration<'a>),
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     TemplateDistribution(TemplateDistribution<'a>),
-    #[cfg_attr(feature = "with_serde", serde(borrow))]
     ShareAccountingMessages(ShareAccountingMessages<'a>),
 }
 
@@ -238,7 +219,6 @@ impl<'a> TryFrom<MiningDeviceMessages<'a>> for PoolExtMessages<'a> {
     }
 }
 
-#[cfg(not(feature = "with_serde"))]
 impl<'decoder> From<PoolExtMessages<'decoder>> for EncodableField<'decoder> {
     fn from(m: PoolExtMessages<'decoder>) -> Self {
         match m {
@@ -296,19 +276,16 @@ impl<'a> TryFrom<(u16, u8, &'a mut [u8])> for PoolExtMessages<'a> {
     fn try_from(v: (u16, u8, &'a mut [u8])) -> Result<Self, Self::Error> {
         let extension = ingnore_channel_bit(v.0);
         if extension == 0 {
-            let is_common: Result<CommonMessageTypes, Error> = v.1.try_into();
-            let is_mining: Result<MiningTypes, Error> = v.1.try_into();
-            let is_job_declaration: Result<JobDeclarationTypes, Error> = v.1.try_into();
-            match (is_common, is_mining, is_job_declaration) {
-                (Ok(_), Err(_), Err(_)) => Ok(Self::Common((v.1, v.2).try_into()?)),
-                (Err(_), Ok(_), Err(_)) => Ok(Self::Mining((v.1, v.2).try_into()?)),
-                (Err(_), Err(_), Ok(_)) => Ok(Self::JobDeclaration((v.1, v.2).try_into()?)),
-                (Err(e), Err(_), Err(_)) => Err(e),
-                // This is an impossible state is safe to panic here
-                _ => panic!(),
+            match PoolMessages::try_from((v.1, v.2))? {
+                PoolMessages::Common(message) => Ok(Self::Common(message)),
+                PoolMessages::Mining(message) => Ok(Self::Mining(message)),
+                PoolMessages::JobDeclaration(message) => Ok(Self::JobDeclaration(message)),
+                PoolMessages::TemplateDistribution(message) => {
+                    Ok(Self::TemplateDistribution(message))
+                }
             }
-        // This is possible since channle bit is never set for this extension
         } else if extension == EXTENSION_TYPE {
+            // The channel bit is not set for this extension.
             Ok(Self::ShareAccountingMessages((v.1, v.2).try_into()?))
         } else {
             // TODO add UnexpectedExtension message to roles_logic_sv2

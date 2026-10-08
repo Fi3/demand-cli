@@ -1,5 +1,5 @@
 use crate::jd_client::error::Error;
-use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
+use demand_sv2_connection::{StandardEitherFrame, StandardSv2Frame};
 use roles_logic_sv2::{
     common_messages_sv2::{Protocol, SetupConnection},
     handlers::common::{ParseUpstreamCommonMessages, SendTo},

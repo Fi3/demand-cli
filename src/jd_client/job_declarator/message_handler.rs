@@ -56,12 +56,13 @@ impl ParseServerJobDeclarationMessages for JobDeclarator {
             .into_inner();
 
         let unknown_tx_position_list: Vec<u16> = message.unknown_tx_position_list.into_inner();
-        let missing_transactions: Vec<binary_sv2::B016M> = unknown_tx_position_list
-            .iter()
-            .filter_map(|&pos| tx_list.get(pos as usize).cloned())
-            .collect();
+        let missing_transactions: Vec<roles_logic_sv2::binary_sv2::B016M> =
+            unknown_tx_position_list
+                .iter()
+                .filter_map(|&pos| tx_list.get(pos as usize).cloned())
+                .collect();
         let request_id = message.request_id;
-        let transaction_list = binary_sv2::Seq064K::new(missing_transactions)
+        let transaction_list = roles_logic_sv2::binary_sv2::Seq064K::new(missing_transactions)
             .map_err(|_| Error::JDSMissingTransactions)?;
         let message_provide_missing_transactions = ProvideMissingTransactionsSuccess {
             request_id,

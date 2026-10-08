@@ -1,11 +1,6 @@
 use alloc::vec::Vec;
-#[cfg(not(feature = "with_serde"))]
-use binary_sv2::binary_codec_sv2;
-#[cfg(feature = "with_serde")]
-use binary_sv2::GetSize;
-use binary_sv2::{Deserialize, Serialize};
-#[cfg(not(feature = "with_serde"))]
 use core::convert::TryInto;
+use roles_logic_sv2::binary_sv2;
 mod phash;
 mod share;
 mod slice;
@@ -14,7 +9,7 @@ pub use phash::PHash;
 pub use share::Share;
 pub use slice::Slice;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(derive_codec_sv2::Encodable, derive_codec_sv2::Decodable, Clone, Debug, PartialEq, Eq)]
 #[already_sized]
 #[repr(C)]
 pub struct Hash256 {
@@ -50,9 +45,29 @@ impl From<Hash256> for [u8; 32] {
     }
 }
 
-#[cfg(feature = "with_serde")]
-impl GetSize for Hash256 {
+impl binary_sv2::GetSize for Hash256 {
     fn get_size(&self) -> usize {
         32
+    }
+}
+
+impl binary_sv2::IntoStatic for PHash {
+    type Static = Self;
+    fn into_static(self) -> Self {
+        self
+    }
+}
+
+impl binary_sv2::IntoStatic for Slice {
+    type Static = Self;
+    fn into_static(self) -> Self {
+        self
+    }
+}
+
+impl binary_sv2::IntoStatic for Share<'_> {
+    type Static = Share<'static>;
+    fn into_static(self) -> Self::Static {
+        self.into_static()
     }
 }

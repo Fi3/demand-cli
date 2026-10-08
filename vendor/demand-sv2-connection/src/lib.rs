@@ -1,117 +1,56 @@
-use binary_sv2::{Deserialize, GetSize, Serialize};
-
+mod buffer_cleanup;
 pub mod noise_connection_tokio;
 
-use codec_sv2::{Error as CodecError, HandShakeFrame, HandshakeRole, StandardEitherFrame};
-use const_sv2::{
-    INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE, RESPONDER_EXPECTED_HANDSHAKE_MESSAGE_SIZE,
-};
-use futures::lock::Mutex;
-use std::{
-    convert::TryInto,
-    sync::{atomic::AtomicBool, Arc},
-};
-use tokio::sync::mpsc::{error::SendError, Receiver, Sender};
+pub use buffer_sv2::Slice;
+pub use noise_sv2::{Initiator, Responder};
+use roles_logic_sv2::framing_sv2::{framing::Sv2Frame, Error as FramingError};
+
+pub type StandardSv2Frame<Message> = Sv2Frame<Message, Slice>;
+pub type StandardEitherFrame<Message> = Frame<Message>;
+
+#[derive(Debug)]
+pub enum HandshakeRole {
+    Initiator(Box<Initiator>),
+    Responder(Box<Responder>),
+}
+
+#[derive(Debug, Clone)]
+pub enum Frame<Message> {
+    Sv2(StandardSv2Frame<Message>),
+}
+
+impl<Message> From<StandardSv2Frame<Message>> for Frame<Message> {
+    fn from(frame: StandardSv2Frame<Message>) -> Self {
+        Self::Sv2(frame)
+    }
+}
+
+impl<Message> TryFrom<Frame<Message>> for StandardSv2Frame<Message> {
+    type Error = FramingError;
+
+    fn try_from(frame: Frame<Message>) -> Result<Self, Self::Error> {
+        match frame {
+            Frame::Sv2(frame) => Ok(frame),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum Error {
-    HandshakeRemoteInvalidMessage,
-    CodecError(CodecError),
-    RecvError,
+    CodecError(codec_sv2::Error),
     SendError,
-    // This means that a socket that was supposed to be opened have been closed, likley by the peer
     SocketClosed,
+    Io(std::io::Error),
 }
 
-impl From<CodecError> for Error {
-    fn from(e: CodecError) -> Self {
-        Error::CodecError(e)
-    }
-}
-impl<T> From<SendError<T>> for Error {
-    fn from(_: SendError<T>) -> Self {
-        Error::SendError
+impl From<codec_sv2::Error> for Error {
+    fn from(error: codec_sv2::Error) -> Self {
+        Self::CodecError(error)
     }
 }
 
-trait SetState {
-    async fn set_state(self_: Arc<Mutex<Self>>, state: codec_sv2::State);
-}
-
-async fn initialize_as_downstream<
-    'a,
-    Message: Serialize + Deserialize<'a> + GetSize,
-    T: SetState,
->(
-    self_: Arc<Mutex<T>>,
-    role: HandshakeRole,
-    sender_outgoing: &mut Sender<StandardEitherFrame<Message>>,
-    receiver_incoming: &mut Receiver<StandardEitherFrame<Message>>,
-) -> Result<(), Error> {
-    let mut state = codec_sv2::State::initialized(role);
-
-    // Create and send first handshake message
-    let first_message = state.step_0()?;
-    sender_outgoing
-        .send(first_message.into())
-        .await
-        .map_err(|_| Error::SendError)?;
-
-    // Receive and deserialize second handshake message
-    let second_message = receiver_incoming.recv().await.ok_or(Error::RecvError)?;
-    let second_message: HandShakeFrame = second_message
-        .try_into()
-        .map_err(|_| Error::HandshakeRemoteInvalidMessage)?;
-    let second_message: [u8; INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE] = second_message
-        .get_payload_when_handshaking()
-        .try_into()
-        .map_err(|_| Error::HandshakeRemoteInvalidMessage)?;
-
-    // Create and send thirth handshake message
-    let transport_mode = state.step_2(second_message)?;
-
-    T::set_state(self_, transport_mode).await;
-    while !TRANSPORT_READY.load(std::sync::atomic::Ordering::SeqCst) {
-        std::hint::spin_loop()
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
     }
-    Ok(())
 }
-
-async fn initialize_as_upstream<'a, Message: Serialize + Deserialize<'a> + GetSize, T: SetState>(
-    self_: Arc<Mutex<T>>,
-    role: HandshakeRole,
-    sender_outgoing: &mut Sender<StandardEitherFrame<Message>>,
-    receiver_incoming: &mut Receiver<StandardEitherFrame<Message>>,
-) -> Result<(), Error> {
-    let mut state = codec_sv2::State::initialized(role);
-
-    // Receive and deserialize first handshake message
-    let first_message: HandShakeFrame = receiver_incoming
-        .recv()
-        .await
-        .ok_or(Error::RecvError)?
-        .try_into()
-        .map_err(|_| Error::HandshakeRemoteInvalidMessage)?;
-    let first_message: [u8; RESPONDER_EXPECTED_HANDSHAKE_MESSAGE_SIZE] = first_message
-        .get_payload_when_handshaking()
-        .try_into()
-        .map_err(|_| Error::HandshakeRemoteInvalidMessage)?;
-
-    // Create and send second handshake message
-    let (second_message, transport_mode) = state.step_1(first_message)?;
-    HANDSHAKE_READY.store(false, std::sync::atomic::Ordering::SeqCst);
-    sender_outgoing.send(second_message.into()).await?;
-
-    // This sets the state to Handshake state - this prompts the task above to move the state
-    // to transport mode so that the next incoming message will be decoded correctly
-    // It is important to do this directly before sending the fourth message
-    T::set_state(self_, transport_mode).await;
-    while !TRANSPORT_READY.load(std::sync::atomic::Ordering::SeqCst) {
-        std::hint::spin_loop()
-    }
-
-    Ok(())
-}
-
-static HANDSHAKE_READY: AtomicBool = AtomicBool::new(false);
-static TRANSPORT_READY: AtomicBool = AtomicBool::new(false);

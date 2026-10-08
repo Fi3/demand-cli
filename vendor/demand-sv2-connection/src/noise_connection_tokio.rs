@@ -1,220 +1,55 @@
-use crate::Error;
-use binary_sv2::{Deserialize, Serialize};
-use futures::lock::Mutex;
-use std::{sync::Arc, time::Duration};
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use crate::{Error, Frame, HandshakeRole, StandardEitherFrame};
+use binary_sv2::{GetSize, Serialize};
+use codec_sv2::{
+    Decrypted, Handshake, NoiseEncoder, Transport, TransportDecryptState, TransportEncryptState,
+};
+use noise_sv2::{
+    Initiator, Responder, ELLSWIFT_ENCODING_SIZE, INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE,
+};
+use std::time::Duration;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::{
+        tcp::{OwnedReadHalf, OwnedWriteHalf},
+        TcpListener, TcpStream,
+    },
+    sync::mpsc::{channel, Receiver, Sender},
     task::{self, AbortHandle},
 };
-
-use binary_sv2::GetSize;
-use codec_sv2::{HandshakeRole, Initiator, Responder, StandardEitherFrame, StandardNoiseDecoder};
-
 use tracing::{debug, error};
 
-#[derive(Debug)]
-pub struct Connection {
-    pub state: codec_sv2::State,
-}
+pub struct Connection;
 
-impl crate::SetState for Connection {
-    async fn set_state(self_: Arc<Mutex<Self>>, state: codec_sv2::State) {
-        loop {
-            if crate::HANDSHAKE_READY.load(std::sync::atomic::Ordering::SeqCst) {
-                if let Some(mut connection) = self_.try_lock() {
-                    connection.state = state;
-                    crate::TRANSPORT_READY.store(true, std::sync::atomic::Ordering::Relaxed);
-                    break;
-                };
-            }
-            task::yield_now().await;
-        }
-    }
-}
+type ConnectionParts<Message> = (
+    Receiver<StandardEitherFrame<Message>>,
+    Sender<StandardEitherFrame<Message>>,
+    AbortHandle,
+    AbortHandle,
+);
 
 impl Connection {
     #[allow(clippy::new_ret_no_self)]
-    pub async fn new<'a, Message: Serialize + Deserialize<'a> + GetSize + Send + 'static>(
-        stream: TcpStream,
+    pub async fn new<Message: Serialize + GetSize + Send + 'static>(
+        mut stream: TcpStream,
         role: HandshakeRole,
-    ) -> Result<
-        (
-            Receiver<StandardEitherFrame<Message>>,
-            Sender<StandardEitherFrame<Message>>,
-            AbortHandle,
-            AbortHandle,
-        ),
-        Error,
-    > {
-        let address = stream.peer_addr().map_err(|_| Error::SocketClosed)?;
-
-        let (mut reader, mut writer) = stream.into_split();
-
-        let (sender_incoming, mut receiver_incoming): (
-            Sender<StandardEitherFrame<Message>>,
-            Receiver<StandardEitherFrame<Message>>,
-        ) = channel(10);
-        let (mut sender_outgoing, mut receiver_outgoing): (
-            Sender<StandardEitherFrame<Message>>,
-            Receiver<StandardEitherFrame<Message>>,
-        ) = channel(10);
-
-        let state = codec_sv2::State::not_initialized(&role);
-
-        let connection = Arc::new(Mutex::new(Self { state }));
-
-        let cloned1 = connection.clone();
-        let cloned2 = connection.clone();
-
-        // RECEIVE AND PARSE INCOMING MESSAGES FROM TCP STREAM
+    ) -> Result<ConnectionParts<Message>, Error> {
+        let address = stream.peer_addr()?;
+        let transport = handshake(&mut stream, role).await?;
+        let (encrypt, decrypt) = transport.split();
+        let (reader, writer) = stream.into_split();
+        let (sender_incoming, receiver_incoming) = channel(10);
+        let (sender_outgoing, receiver_outgoing) = channel(10);
         let recv_task = task::spawn(async move {
-            let mut decoder = StandardNoiseDecoder::<Message>::new();
-
-            loop {
-                let writable = decoder.writable();
-                match reader.read_exact(writable).await {
-                    Ok(_) => {
-                        let mut connection = cloned1.lock().await;
-                        let decoded = decoder.next_frame(&mut connection.state);
-                        drop(connection);
-
-                        match decoded {
-                            Ok(x) => {
-                                if sender_incoming.send(x).await.is_err() {
-                                    error!("Shutting down noise stream reader!");
-                                    task::yield_now().await;
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                if let codec_sv2::Error::MissingBytes(_) = e {
-                                } else {
-                                    error!("Shutting down noise stream reader! {:#?}", e);
-                                    task::yield_now().await;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!(
-                            "Disconnected from client while reading : {} - {}",
-                            e, &address
-                        );
-                        task::yield_now().await;
-                        break;
-                    }
-                }
-            }
-            drop(sender_incoming);
-            drop(cloned1);
-            drop(reader);
-            let mut times = 0;
-            while !decoder.droppable() {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                if times >= 60 {
-                    error!("Irrecoverable error impossible to free decoder");
-                    std::process::exit(1);
-                }
-                times += 1;
+            if let Err(error) = receive(reader, decrypt, sender_incoming).await {
+                error!(%address, ?error, "Noise stream reader stopped");
             }
         });
-
-        // ENCODE AND SEND INCOMING MESSAGES TO TCP STREAM
         let send_task = task::spawn(async move {
-            let mut encoder = codec_sv2::NoiseEncoder::<Message>::new();
-
-            loop {
-                let received = receiver_outgoing.recv().await;
-
-                match received {
-                    Some(frame) => {
-                        let mut connection = cloned2.lock().await;
-                        match encoder.encode(frame, &mut connection.state) {
-                            Ok(b) => {
-                                drop(connection);
-
-                                let b = b.as_ref();
-
-                                match (writer).write_all(b).await {
-                                    Ok(_) => (),
-                                    Err(e) => {
-                                        let _ = writer.shutdown().await;
-                                        // Just fail and force to reinitialize everything
-                                        error!(
-                                        "Disconnecting from client due to error writing: {} - {}",
-                                        e, &address
-                                    );
-                                        task::yield_now().await;
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!(
-                                    "Disconnecting from client due to error encoding: {} - {}",
-                                    e, &address
-                                );
-                                drop(connection);
-                                task::yield_now().await;
-                                break;
-                            }
-                        };
-                    }
-                    None => {
-                        // Just fail and force to reinitialize everything
-                        let _ = writer.shutdown().await;
-                        error!(
-                            "Disconnecting from client due to error receiving from: {}",
-                            &address
-                        );
-                        task::yield_now().await;
-                        break;
-                    }
-                };
-                crate::HANDSHAKE_READY.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-            receiver_outgoing.close();
-            drop(receiver_outgoing);
-            drop(cloned2);
-            drop(writer);
-            let mut times = 0;
-            while !encoder.droppable() {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                if times >= 10 {
-                    error!("Irrecoverable error impossible to free encoder");
-                    std::process::exit(1);
-                }
-                times += 1;
+            if let Err(error) = send(writer, encrypt, receiver_outgoing).await {
+                error!(%address, ?error, "Noise stream writer stopped");
             }
         });
-
-        // DO THE NOISE HANDSHAKE
-        match role {
-            HandshakeRole::Initiator(_) => {
-                debug!("Initializing as downstream for - {}", &address);
-                crate::initialize_as_downstream(
-                    connection.clone(),
-                    role,
-                    &mut sender_outgoing,
-                    &mut receiver_incoming,
-                )
-                .await?
-            }
-            HandshakeRole::Responder(_) => {
-                debug!("Initializing as upstream for - {}", &address);
-                crate::initialize_as_upstream(
-                    connection.clone(),
-                    role,
-                    &mut sender_outgoing,
-                    &mut receiver_incoming,
-                )
-                .await?
-            }
-        };
-        debug!("Noise handshake complete - {}", &address);
+        debug!(%address, "Noise handshake complete");
         Ok((
             receiver_incoming,
             sender_outgoing,
@@ -224,6 +59,67 @@ impl Connection {
     }
 }
 
+async fn handshake(stream: &mut TcpStream, role: HandshakeRole) -> Result<Transport, Error> {
+    match role {
+        HandshakeRole::Initiator(initiator) => {
+            let (first, state) = Handshake::initiator(initiator).step_0()?;
+            stream.write_all(first.payload()).await?;
+            let mut response = [0; INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE];
+            stream.read_exact(&mut response).await?;
+            Ok(state.step_2(response)?)
+        }
+        HandshakeRole::Responder(responder) => {
+            let mut first = [0; ELLSWIFT_ENCODING_SIZE];
+            stream.read_exact(&mut first).await?;
+            let (response, transport) = Handshake::responder(responder).step_1(first)?;
+            stream.write_all(response.payload()).await?;
+            Ok(transport)
+        }
+    }
+}
+
+async fn receive<Message: Serialize + GetSize>(
+    mut reader: OwnedReadHalf,
+    mut state: TransportDecryptState,
+    sender: Sender<StandardEitherFrame<Message>>,
+) -> Result<(), Error> {
+    let mut decoder = crate::buffer_cleanup::Decoder::new();
+    loop {
+        match decoder.next_transport_frame(state)? {
+            Decrypted::Frame(frame, next) => {
+                state = next;
+                sender
+                    .send(Frame::Sv2(frame.into()))
+                    .await
+                    .map_err(|_| Error::SendError)?;
+            }
+            Decrypted::Incomplete(missing, next) => {
+                state = next;
+                if missing != 0 {
+                    tokio::select! {
+                        result = reader.read_exact(decoder.writable()) => { result?; }
+                        _ = sender.closed() => return Ok(()),
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn send<Message: Serialize + GetSize>(
+    mut writer: OwnedWriteHalf,
+    mut state: TransportEncryptState,
+    mut receiver: Receiver<StandardEitherFrame<Message>>,
+) -> Result<(), Error> {
+    let mut encoder = NoiseEncoder::new();
+    while let Some(Frame::Sv2(frame)) = receiver.recv().await {
+        let encrypted = encoder.encode_transport(frame, &mut state)?;
+        writer.write_all(encrypted.as_ref()).await?;
+    }
+    writer.shutdown().await?;
+    Ok(())
+}
+
 pub async fn listen(
     address: &str,
     authority_public_key: [u8; 32],
@@ -231,17 +127,22 @@ pub async fn listen(
     cert_validity: Duration,
     sender: Sender<(TcpStream, HandshakeRole)>,
 ) {
-    let listner = TcpListener::bind(address).await.unwrap();
+    let listener = TcpListener::bind(address).await.unwrap();
     loop {
-        if let Ok((stream, _)) = listner.accept().await {
+        if let Ok((stream, _)) = listener.accept().await {
             let responder = Responder::from_authority_kp(
                 &authority_public_key,
                 &authority_private_key,
                 cert_validity,
             )
             .unwrap();
-            let role = HandshakeRole::Responder(responder);
-            let _ = sender.send((stream, role)).await;
+            if sender
+                .send((stream, HandshakeRole::Responder(responder)))
+                .await
+                .is_err()
+            {
+                break;
+            }
         }
     }
 }
@@ -251,7 +152,6 @@ pub async fn connect(
     authority_public_key: [u8; 32],
 ) -> Result<(TcpStream, HandshakeRole), ()> {
     let stream = TcpStream::connect(address).await.map_err(|_| ())?;
-    let initiator = Initiator::from_raw_k(authority_public_key).unwrap();
-    let role = HandshakeRole::Initiator(initiator);
-    Ok((stream, role))
+    let initiator = Initiator::from_raw_k(authority_public_key).map_err(|_| ())?;
+    Ok((stream, HandshakeRole::Initiator(initiator)))
 }

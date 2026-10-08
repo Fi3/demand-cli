@@ -7,7 +7,7 @@ use tokio::time::{timeout, Duration};
 
 use super::{job_declarator::JobDeclarator, mining_upstream::Upstream as UpstreamMiningNode};
 use crate::jd_client::error::Error as JdClientError;
-use binary_sv2::B064K;
+use roles_logic_sv2::binary_sv2::B064K;
 use roles_logic_sv2::{
     channel_logic::channel_factory::{OnNewShare, PoolChannelFactory, Share},
     common_properties::{CommonDownstreamData, IsDownstream, IsMiningDownstream},
@@ -28,7 +28,7 @@ use tokio::{
 };
 use tracing::{debug, error, warn};
 
-use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
+use demand_sv2_connection::{StandardEitherFrame, StandardSv2Frame};
 
 use bitcoin::{consensus::Decodable, TxOut};
 
@@ -1016,7 +1016,9 @@ mod tests {
             future_template: true,
             version: 0,
             coinbase_tx_version: 2,
-            coinbase_prefix: vec![1, 1, 0].try_into().expect("valid BIP34 test prefix"),
+            coinbase_prefix: vec![2, 1, 1, 0]
+                .try_into()
+                .expect("valid BIP34 test prefix"),
             coinbase_tx_input_sequence: 0,
             coinbase_tx_value_remaining: 1,
             coinbase_tx_outputs_count: 7,
