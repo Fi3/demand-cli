@@ -222,6 +222,7 @@ struct ChannelFactory {
     standard_channels_for_hom_downstreams: HashMap<u32, StandardChannel, BuildNoHashHasher<u32>>,
     extended_channels:
         HashMap<u32, OpenExtendedMiningChannelSuccess<'static>, BuildNoHashHasher<u32>>,
+    extended_channel_prefix_counts: HashMap<Vec<u8>, usize>,
     extranonces: ExtendedExtranonce,
     share_per_min: f32,
     // (NewExtendedMiningJob,group ids that already received the future job)
@@ -249,13 +250,37 @@ impl ChannelFactory {
     fn close_channel(&mut self, channel_id: u32) {
         self.standard_channels_for_hom_downstreams
             .remove(&channel_id);
-        self.extended_channels.remove(&channel_id);
+        self.remove_extended_channel(channel_id);
         self.extended_job_variants
             .retain(|(variant_channel_id, _), _| *variant_channel_id != channel_id);
     }
 }
 
 impl ChannelFactory {
+    fn remove_extended_channel(&mut self, channel_id: u32) {
+        if let Some(channel) = self.extended_channels.remove(&channel_id) {
+            let prefix = channel.extranonce_prefix.inner_as_ref();
+            let count = self
+                .extended_channel_prefix_counts
+                .get_mut(prefix)
+                .expect("extended channel prefix must be registered");
+            *count -= 1;
+            if *count == 0 {
+                self.extended_channel_prefix_counts.remove(prefix);
+            }
+        }
+    }
+
+    fn insert_extended_channel(&mut self, channel: OpenExtendedMiningChannelSuccess<'static>) {
+        self.remove_extended_channel(channel.channel_id);
+        // Trusted JD replicas can share a prefix. Keep it reserved until all replicas close.
+        *self
+            .extended_channel_prefix_counts
+            .entry(channel.extranonce_prefix.to_vec())
+            .or_default() += 1;
+        self.extended_channels.insert(channel.channel_id, channel);
+    }
+
     fn add_valid_job(&mut self, job: NewExtendedMiningJob<'static>, group_ids: Vec<u32>) {
         match self.last_valid_jobs {
             [None, None, None] => {
@@ -398,8 +423,7 @@ impl ChannelFactory {
                 extranonce_size: max_extranonce_size,
                 extranonce_prefix: extranonce_with_stripped_data,
             };
-            self.extended_channels
-                .insert(channel_id, success_with_stirpped_extranonce_add_data);
+            self.insert_extended_channel(success_with_stirpped_extranonce_add_data);
             let extranonce_prefix = extranonce
                 .into_prefix(
                     self.extranonces.get_prefix_len(),
@@ -427,9 +451,8 @@ impl ChannelFactory {
     }
 
     fn has_extended_channel_extranonce_prefix(&self, extranonce_prefix: &[u8]) -> bool {
-        self.extended_channels
-            .values()
-            .any(|channel| channel.extranonce_prefix.inner_as_ref() == extranonce_prefix)
+        self.extended_channel_prefix_counts
+            .contains_key(extranonce_prefix)
     }
 
     fn prepare_extended_jobs_and_p_hash(&self, result: &mut Vec<Mining<'static>>, channel_id: u32) {
@@ -485,7 +508,7 @@ impl ChannelFactory {
             extranonce_size,
             extranonce_prefix,
         };
-        self.extended_channels.insert(channel_id, success);
+        self.insert_extended_channel(success);
     }
 
     /// Called when an `OpenStandardChannel` message is received for a header only mining channel.
@@ -1263,6 +1286,7 @@ impl PoolChannelFactory {
                 BuildNoHashHasher::default(),
             ),
             extended_channels: HashMap::with_hasher(BuildNoHashHasher::default()),
+            extended_channel_prefix_counts: HashMap::new(),
             extranonces,
             share_per_min,
             future_jobs: Vec::new(),
@@ -1961,6 +1985,7 @@ impl ProxyExtendedChannelFactory {
                 BuildNoHashHasher::default(),
             ),
             extended_channels: HashMap::with_hasher(BuildNoHashHasher::default()),
+            extended_channel_prefix_counts: HashMap::new(),
             extranonces,
             share_per_min,
             future_jobs: Vec::new(),

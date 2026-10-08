@@ -37,6 +37,129 @@ fn mining_job() -> NewExtendedMiningJob<'static> {
     }
 }
 
+fn channel_factory() -> roles_logic_sv2::channel_logic::channel_factory::PoolChannelFactory {
+    use roles_logic_sv2::{
+        channel_logic::channel_factory::{ExtendedChannelKind, PoolChannelFactory},
+        job_creator::JobsCreators,
+        mining_sv2::ExtendedExtranonce,
+        utils::{GroupId, Mutex},
+    };
+    use std::sync::Arc;
+
+    PoolChannelFactory::new(
+        Arc::new(Mutex::new(GroupId::new())),
+        ExtendedExtranonce::new(0..0, 0..2, 2..32),
+        JobsCreators::new(32),
+        60.0,
+        ExtendedChannelKind::Pool,
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap()
+}
+
+fn channel_opening_time(count: u32) -> Duration {
+    let mut samples = [Duration::ZERO; 3];
+    for sample in &mut samples {
+        let mut factory = channel_factory();
+        let start = Instant::now();
+        for request_id in 0..count {
+            black_box(
+                factory
+                    .new_extended_channel(request_id, 100_000.0, 28)
+                    .unwrap(),
+            );
+        }
+        *sample = start.elapsed();
+        assert_eq!(factory.get_extended_channels_ids().len(), count as usize);
+    }
+    samples.sort();
+    samples[1]
+}
+
+#[test]
+fn miner_channel_opening_scales_with_connection_count() {
+    // Ten times as many connections must remain well below quadratic (100x) work.
+    // Three samples and a 30x limit leave room for allocator and scheduler variation.
+    let small = channel_opening_time(1_000);
+    let large = channel_opening_time(10_000);
+    eprintln!("channel opening: 1,000={small:?}, 10,000={large:?}");
+    assert!(
+        large <= small * 30,
+        "channel opening grew faster than the linear budget: 1,000={small:?}, 10,000={large:?}"
+    );
+}
+
+fn restore_channel(
+    factory: &mut roles_logic_sv2::channel_logic::channel_factory::PoolChannelFactory,
+    channel_id: u32,
+    prefix: &[u8],
+) -> Result<Vec<roles_logic_sv2::parsers::Mining<'static>>, roles_logic_sv2::Error> {
+    factory.replicate_pool_extended_channel(
+        0,
+        [0xff; 32].into(),
+        prefix.to_vec().try_into().unwrap(),
+        channel_id,
+        30,
+        Vec::new(),
+    )
+}
+
+#[test]
+fn channel_prefix_index_tracks_restored_generated_and_closed_channels() {
+    use roles_logic_sv2::{parsers::Mining, Error};
+
+    let mut factory = channel_factory();
+    restore_channel(&mut factory, 50_000, &[0, 1]).unwrap();
+    let messages = factory.new_extended_channel(0, 100_000.0, 28).unwrap();
+    let Mining::OpenExtendedMiningChannelSuccess(opened) = &messages[0] else {
+        panic!("expected an open channel");
+    };
+    assert_eq!(opened.extranonce_prefix.as_ref(), &[0, 2]);
+    assert!(matches!(
+        restore_channel(&mut factory, 50_001, &[0, 2]),
+        Err(Error::ExtranoncePrefixAlreadyInUse)
+    ));
+    factory.close_channel(opened.channel_id);
+    restore_channel(&mut factory, 50_001, &[0, 2]).unwrap();
+    factory.close_channel(50_000);
+    restore_channel(&mut factory, 50_002, &[0, 1]).unwrap();
+}
+
+#[test]
+fn channel_prefix_index_retains_duplicate_replicas_and_releases_replacements() {
+    use roles_logic_sv2::Error;
+
+    let mut factory = channel_factory();
+    for channel_id in [50_000, 50_001] {
+        factory
+            .replicate_upstream_extended_channel_only_jd(
+                [0xff; 32].into(),
+                vec![0, 1].try_into().unwrap(),
+                channel_id,
+                30,
+            )
+            .unwrap();
+    }
+    factory.close_channel(50_000);
+    assert!(matches!(
+        restore_channel(&mut factory, 50_002, &[0, 1]),
+        Err(Error::ExtranoncePrefixAlreadyInUse)
+    ));
+    factory
+        .replicate_upstream_extended_channel_only_jd(
+            [0xff; 32].into(),
+            vec![0, 2].try_into().unwrap(),
+            50_001,
+            30,
+        )
+        .unwrap();
+    restore_channel(&mut factory, 50_002, &[0, 1]).unwrap();
+    factory.close_channel(50_001);
+    restore_channel(&mut factory, 50_003, &[0, 2]).unwrap();
+    factory.close_channel(50_001);
+}
+
 fn extended_share() -> SubmitSharesExtended<'static> {
     SubmitSharesExtended {
         channel_id: 7,

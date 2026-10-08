@@ -402,6 +402,9 @@ Custom jobs carry the reward in the serialized coinbase outputs. The client and
 the miner job creator use the same calculation. It assigns the template reward
 to the first pool output and then adds the template outputs. This rule applies
 to current and future jobs.
+Extended channel prefixes use a hash index. Prefix lookup takes expected
+constant time. A count keeps a prefix in use until all channel replicas close.
+Channel replacement removes the old prefix from the index.
 Transport queues retain their limit of 10 messages. Received frame data stays in
 the buffer pool until the consumer releases it.
 
@@ -441,3 +444,10 @@ bytes. Encoding includes the input copy. Decoding includes the input byte copy
 and conversion to an owned message. Size calculation needs no allocations.
 These checks measure message processing. They do not measure live pool mining
 or network throughput.
+
+The channel opening regression check compares 1,000 and 10,000 connections with
+no active jobs. Each time is the median of three runs in the debug build. Before
+the index change, the times were 19 ms and 1,537 ms. After the change, the times
+were 5 ms and 44 ms. The check permits a maximum increase of 30 times for 10 times
+as many connections. It rejects the former quadratic scan and allows variation
+from the allocator and process scheduling.
